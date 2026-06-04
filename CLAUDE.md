@@ -60,37 +60,48 @@ const itemData = await getItemData(id);
 #### Решение: одно вычисляемое поле `lineage_key`
 
 В датасете PIX BI создаётся calculated field, склеивающий весь путь в одну
-строку через разделитель `||`, и кладётся **единственным** полем в «Категории».
+строку, и кладётся **единственным** полем в «Категории».
 Тогда `categories[i].name` = полный путь, а парсер в `lineage.js` разбирает его
-обратно по `||`.
+обратно.
 
 **Конфигурация визуализации в PIX BI:**
 - **Категории:** только `lineage_key` (одно поле!)
 - **Меры:** `COUNT(app_id)` — обязательно, иначе запрос вернёт 0 строк
 - **Серии:** пусто
 
+**Формат полей: `значение::инфо`**
+
+Каждое из 10 полей в `lineage_key` может содержать `::` — часть **до** `::`
+используется как имя узла (для идентификации и связей), часть **после** `::` —
+как дополнительная информация, которая показывается в тултипе при наведении.
+Если `::` отсутствует, всё поле считается значением, инфо — пустая.
+
 **Формула `lineage_key` (порядок полей фиксирован, индексы 0–9):**
 ```
 concat(
-  coalesce(table_schema,''),          '||',  -- 0
-  coalesce(table_name,''),            '||',  -- 1
-  coalesce(view_schema,''),           '||',  -- 2
-  coalesce(view_name,''),             '||',  -- 3
-  coalesce(adqm_src_table_schema,''), '||',  -- 4
-  coalesce(adqm_src_table_name,''),   '||',  -- 5
-  coalesce(adqm_view_schema,''),      '||',  -- 6
-  coalesce(adqm_view_name,''),        '||',  -- 7
-  coalesce(app_id,''),                '||',  -- 8
-  coalesce(app_name,'')                      -- 9
+  coalesce(table_schema,''),          '::', coalesce(tab_schem_info,''),   '||',  -- 0
+  coalesce(table_name,''),            '::', coalesce(tab_name_info,''),   '||',  -- 1
+  coalesce(view_schema,''),           '::', coalesce(v_schem_info,''),     '||',  -- 2
+  coalesce(view_name,''),             '::', coalesce(v_name_info,''),      '||',  -- 3
+  coalesce(adqm_src_table_schema,''), '::', '',                             '||',  -- 4
+  coalesce(adqm_src_table_name,''),   '::', '',                             '||',  -- 5
+  coalesce(adqm_view_schema,''),      '::', '',                             '||',  -- 6
+  coalesce(adqm_view_name,''),        '::', '',                             '||',  -- 7
+  coalesce(app_id,''),                '::', '',                             '||',  -- 8
+  coalesce(app_name,''),              '::', coalesce(app_author,''),                -- 9
+  -- где tab_schem_info, tab_name_info, v_schem_info, v_name_info — поля с описаниями
 )
 ```
+
+Разделитель полей: `||`, разделитель значение/инфо: `::`.
 
 > `coalesce`/`ifnull` обязателен: иначе пустые поля (view/adqm у прямых ODS)
 > дадут `null` и сломают весь конкат.
 
-`lineage.js` берёт `categories[i].name`, делает `split('||')` и строит граф
-по индексам 0–9. ID блока (`getItemData(id)`) меняется при пересоздании блока —
-обновлять `const id` в начале файла.
+`lineage.js` берёт `categories[i].name`, делает `split('||')`, затем каждое
+поле разбирает через `parseField` (по `::`) — значение для графа, инфо для тултипа.
+ID блока (`getItemData(id)`) меняется при пересоздании блока — обновлять
+`const id` в начале файла.
 
 ### Три типа lineage (ind_name)
 
@@ -203,12 +214,16 @@ pixbi_lineage/
   type,               // source_schema | source_table | view_schema | view |
                       // adqm_db | adqm_table | adqm_view_db | adqm_view | dashboard
   layer,              // source | view | adqm | adqm_view | dashboard
-  details: { schema?, database?, fullName?, id?, author?, domain?, dataset? },
+  details: { schema?, database?, fullName?, id?, _info? },
   refCount            // сколько раз узел встретился (показывается в тултипе)
 }
 ```
 В `nodeData` (для ECharts) `name` — **короткое** имя (`fullName.split('.').pop()`),
 полное лежит в `_fullName`.
+
+Поле `details._info` содержит строку после `::` из соответствующего поля
+`lineage_key` (напр. «домен УДТМ, БС, БР»). Если `_info` непустая — она
+показывается синим текстом в тултипе сразу под названием узла.
 
 ### Edge (`linkList`)
 ```js
@@ -250,18 +265,17 @@ pixbi_lineage/
   `buildHighlightedOption` и `buildResetOption` строят серию через spread от него
   (с `animation: false` в подсветке/сбросе, чтобы граф не переанимировался).
   Штатный `focusNodeAdjacency` не используется — подсветкой управляем сами.
-- **Hover** → тултип с `_fullName`, типом/слоем, `refCount` и полями из
-  `details`. Набор полей — декларативная схема `TOOLTIP_FIELDS`
-  (`{ key, label, skipIfEqualsName? }`). Поле показывается, только если в
-  `details` есть непустое значение.
+- **Hover** → тултип с `_fullName`, инфо из `_info` (синим, если есть),
+  типом/слоем, `refCount` и полями из `details`. Набор полей — декларативная
+  схема `TOOLTIP_FIELDS` (`{ key, label, skipIfEqualsName? }`). Поле показывается,
+  только если в `details` есть непустое значение.
 
-  **Как добавить поле в тултип:**
-  1. Положить значение в `details` при `ensureNode` (напр. `author`, `domain`,
-     `dataset` у узла Dashboard).
-  2. Добавить строку в `TOOLTIP_FIELDS`: `{ key: '<ключ details>', label: '<подпись>' }`.
-  3. Если данные приходят из CSV — сперва **расширить формулу `lineage_key`**
-     (добавить поле в `concat` и индекс в `F`), т.к. сейчас в ключе только путь
-     (10 полей), а `app_author`/`sid_domen`/`dataset_name` в нём НЕТ.
+  **Как добавить информацию в тултип:**
+  1. Через `lineage_key`: передать данные после `::` в нужном поле формулы.
+     `lineage.js` автоматически распарсит `::` и положит в `details._info`.
+  2. Для дополнительных фиксированных полей (schema, database, fullName):
+     положить значение в `details` при `ensureNode` и добавить строку в
+     `TOOLTIP_FIELDS`: `{ key: '<ключ details>', label: '<подпись>' }`.
 - `roam` (zoom/pan) + `draggable`, `scaleLimit` 0.3..4.
 
 ### Тема

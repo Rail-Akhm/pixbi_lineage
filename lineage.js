@@ -11,7 +11,8 @@
 
   const dataCategories = Array.isArray(itemData?.categories) ? itemData.categories : [];
 
-  // Разбор lineage_key по '||'. Порядок полей фиксирован (индексы 0–9):
+  // Разбор lineage_key по '||'. Порядок полей фиксирован (индексы 0–9).
+  // Каждое поле может иметь формат "значение::инфо" — часть после :: показывается в тултипе.
   const KEY_SEP = '||';
   const F = {
     SRC_SCHEMA: 0, SRC_TABLE: 1,
@@ -21,6 +22,14 @@
     APP_ID: 8,     APP_NAME: 9
   };
 
+  // Парсинг поля формата "значение::инфо"
+  const parseField = (raw) => {
+    const s = (raw ?? '').toString().trim();
+    const idx = s.indexOf('::');
+    if (idx === -1) return { value: s, info: '' };
+    return { value: s.slice(0, idx).trim(), info: s.slice(idx + 2).trim() };
+  };
+
   // Превращаем categories -> массив "строк" (массивов полей)
   const rows = dataCategories.map(c => {
     const key = (c?.name ?? '').toString();
@@ -28,8 +37,9 @@
     return parts;
   });
 
-  // Доступ к полю строки по индексу
-  const col = (r, idx) => (r[idx] ?? '').toString().trim();
+  // Доступ к полю строки: значение (до ::) и инфо (после ::)
+  const col = (r, idx) => parseField(r[idx]).value;
+  const inf = (r, idx) => parseField(r[idx]).info;
 
   // ====== Константы слоёв ======
   const LAYER_COLORS = {
@@ -64,10 +74,7 @@
   const TOOLTIP_FIELDS = [
     { key: 'schema',   label: 'Схема' },
     { key: 'database', label: 'База' },
-    { key: 'fullName', label: 'Полное имя', skipIfEqualsName: true },
-    { key: 'author',   label: 'Автор' },
-    { key: 'domain',   label: 'Домен' },
-    { key: 'dataset',  label: 'Датасет' }
+    { key: 'fullName', label: 'Полное имя', skipIfEqualsName: true }
   ];
 
   // ====== Построение графа ======
@@ -102,10 +109,19 @@
     const avName    = col(r, F.AV_NAME);
     const appId     = col(r, F.APP_ID);
     const appName   = col(r, F.APP_NAME);
-    // Этих полей нет в lineage_key — оставлены пустыми (тултип их просто скроет)
-    const author    = '';
-    const dataset   = '';
-    const domain    = '';
+
+    // Информация для тултипа (часть после :: у каждого поля)
+    const info = {
+      srcSchema: inf(r, F.SRC_SCHEMA),
+      srcTable:  inf(r, F.SRC_TABLE),
+      vSchema:   inf(r, F.V_SCHEMA),
+      vName:     inf(r, F.V_NAME),
+      aDb:       inf(r, F.A_DB),
+      aTbl:      inf(r, F.A_TBL),
+      avSchema:  inf(r, F.AV_SCHEMA),
+      avName:    inf(r, F.AV_NAME),
+      app:       inf(r, F.APP_NAME) || inf(r, F.APP_ID)
+    };
 
     // Идентификатор дашборда: app_id, иначе fallback на app_name
     const dashKey = appId || appName;
@@ -117,12 +133,14 @@
 
     // ---- Source Schema ----
     ensureNode(`s_schema:${srcSchema}`, srcSchema, 'source_schema', 'source', {
-      fullName: srcSchema
+      fullName: srcSchema,
+      _info: info.srcSchema
     });
     // ---- Source Table ----
     ensureNode(`s_table:${srcTblFull}`, srcTable, 'source_table', 'source', {
       schema: srcSchema,
-      fullName: srcTblFull
+      fullName: srcTblFull,
+      _info: info.srcTable
     });
     addLink(`s_schema:${srcSchema}`, `s_table:${srcTblFull}`);
 
@@ -131,11 +149,13 @@
     // ---- View Schema + View (если есть) ----
     if (vSchema && vName) {
       ensureNode(`v_schema:${vSchema}`, vSchema, 'view_schema', 'view', {
-        fullName: vSchema
+        fullName: vSchema,
+        _info: info.vSchema
       });
       ensureNode(`view:${vSchema}.${vName}`, vName, 'view', 'view', {
         schema: vSchema,
-        fullName: `${vSchema}.${vName}`
+        fullName: `${vSchema}.${vName}`,
+        _info: info.vName
       });
       addLink(tail, `v_schema:${vSchema}`);
       addLink(`v_schema:${vSchema}`, `view:${vSchema}.${vName}`);
@@ -145,12 +165,14 @@
     // ---- ADQM (если есть) ----
     if (aDb && aTbl) {
       ensureNode(`adqm_db:${aDb}`, aDb, 'adqm_db', 'adqm', {
-        fullName: aDb
+        fullName: aDb,
+        _info: info.aDb
       });
       const aTblFull = `${aDb}.${aTbl}`;
       ensureNode(`adqm_table:${aTblFull}`, aTbl, 'adqm_table', 'adqm', {
         database: aDb,
-        fullName: aTblFull
+        fullName: aTblFull,
+        _info: info.aTbl
       });
       addLink(tail, `adqm_db:${aDb}`);
       addLink(`adqm_db:${aDb}`, `adqm_table:${aTblFull}`);
@@ -159,12 +181,14 @@
       // ---- ADQM View Schema + View (если есть) ----
       if (avSchema && avName) {
         ensureNode(`av_schema:${avSchema}`, avSchema, 'adqm_view_db', 'adqm_view', {
-          fullName: avSchema
+          fullName: avSchema,
+          _info: info.avSchema
         });
         const avFull = `${avSchema}.${avName}`;
         ensureNode(`av_view:${avFull}`, avName, 'adqm_view', 'adqm_view', {
           schema: avSchema,
-          fullName: avFull
+          fullName: avFull,
+          _info: info.avName
         });
         addLink(tail, `av_schema:${avSchema}`);
         addLink(`av_schema:${avSchema}`, `av_view:${avFull}`);
@@ -176,9 +200,7 @@
     const dashLabel = appName || `Дашборд #${dashKey}`;
     ensureNode(`dash:${dashKey}`, dashLabel, 'dashboard', 'dashboard', {
       id: appId,
-      author,
-      domain,
-      dataset
+      _info: info.app
     });
     addLink(tail, `dash:${dashKey}`);
   }
@@ -348,7 +370,7 @@
       `rows (распарсенных) = ${rows.length}\n\n` +
       `categories[0] (сырое):\n${cat0}\n\n` +
       `rows[0] (после split '||', полей ${rows[0]?.length ?? 0}):\n${rowSample}\n\n` +
-      `Ожидается 10 полей: srcSchema|srcTable|vSchema|vName|aDb|aTbl|avSchema|avName|appId|appName\n` +
+      `Ожидается 10 полей (каждое может быть в формате "значение::инфо"): srcSchema|srcTable|vSchema|vName|aDb|aTbl|avSchema|avName|appId|appName\n` +
       `Если полей мало — проверь формулу lineage_key в PIX BI (разделитель '||').`;
     chart.setOption({
       backgroundColor: '#fff',
@@ -439,6 +461,10 @@
           const d = p.data;
           const det = d._details || {};
           let html = `<b style="font-size:14px">${d._fullName || d.name}</b>`;
+          // Информация после :: показывается отдельной строкой
+          if (det._info) {
+            html += `<br><span style="color:#60a5fa;font-weight:500">${det._info}</span>`;
+          }
           html += `<br><span style="opacity:0.6">${d._type} · ${d._layer}</span>`;
           // Поля выводятся декларативно из TOOLTIP_FIELDS (см. определение выше)
           for (const f of TOOLTIP_FIELDS) {
