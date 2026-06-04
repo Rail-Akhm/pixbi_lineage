@@ -1,5 +1,5 @@
 (async function () {
-  const id = 'cqy8yua8pfhwcumc39gikgy9t44l2usc';
+  const id = '82hdt27oq8j739qz6skpqrl1kpvgv9dx';
 
   // ====== Данные ======
   // PIX BI отдаёт данные как модель "категория × серия":
@@ -215,11 +215,9 @@
   }
 
   // ====== Позиционирование узлов по слоям (горизонтально) ======
-  // При layout:'none' ECharts автоматически fit-ит граф в canvas — это
-  // пропорционально сжимает ОБЕ оси. Чтобы фиксированные пиксельные зазоры
-  // не "съедались" zoom-ом, мы вычисляем zoom явно из реального размера
-  // контейнера и bounding box графа, и затем задаём zoom/center в серии.
-  const NODE_VERTICAL_GAP = 16;   // фиксированный px между узлами по вертикали
+  // Теперь слои располагаются слева направо (x по слою, y внутри слоя —
+  // вертикальным рядом).
+  const V_GAP = 16;
   const NODE_MIN_W = 90;
   const NODE_MAX_W = 180;
   const NODE_H = 30;
@@ -233,59 +231,20 @@
   // Чтобы весь самый высокий слой умещался в ~4000px (комфортный zoom)
   const TARGET_TOTAL_H = 4000;
   const nodeW = Math.max(NODE_MIN_W, Math.min(NODE_MAX_W,
-    Math.floor((TARGET_TOTAL_H - (maxCount - 1) * NODE_VERTICAL_GAP) / maxCount)
+    Math.floor((TARGET_TOTAL_H - (maxCount - 1) * V_GAP) / maxCount)
   ));
 
   for (const [layer, nodes] of Object.entries(byLayer)) {
     nodes.sort((a, b) => a.name.localeCompare(b.name));
-    const totalH = nodes.length * NODE_H + (nodes.length - 1) * NODE_VERTICAL_GAP;
+    const totalH = nodes.length * NODE_H + (nodes.length - 1) * V_GAP;
     const startY = -totalH / 2;
     const xPos = LAYER_X[layer] ?? 0;
 
     nodes.forEach((n, i) => {
       n.x = xPos;
-      n.y = startY + i * (NODE_H + NODE_VERTICAL_GAP) + NODE_H / 2;
+      n.y = startY + i * (NODE_H + V_GAP) + NODE_H / 2;
       n.symbolSize = [nodeW, NODE_H];
     });
-  }
-
-  // --- Вычисляем bounding box всего графа ---
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const n of nodeMap.values()) {
-    const [w, h] = n.symbolSize;
-    minX = Math.min(minX, n.x - w / 2);
-    maxX = Math.max(maxX, n.x + w / 2);
-    minY = Math.min(minY, n.y - h / 2);
-    maxY = Math.max(maxY, n.y + h / 2);
-  }
-  const bbW = maxX - minX;
-  const bbH = maxY - minY;
-
-  // --- Получаем размер контейнера ---
-  const el = document.getElementById(id);
-  const containerW = el ? el.clientWidth  : (window.innerWidth  || 800);
-  const containerH = el ? el.clientHeight : (window.innerHeight || 600);
-
-  // --- CSS-масштабирование вместо авто-fit ECharts ---
-  // Растягиваем div до логического размера bounding box,
-  // CSS transform:scale() сожмёт/растянет до реального блока PIX BI.
-  // ECharts получит canvas нужного размера и не будет авто-фитить.
-  const PAD_X = 60;
-  const PAD_Y = 60;
-  const logicalW = bbW + PAD_X * 2;
-  const logicalH = bbH + PAD_Y * 2;
-
-  el.style.width  = logicalW + 'px';
-  el.style.height = logicalH + 'px';
-  el.style.transformOrigin = 'top left';
-  el.style.transform = `scale(${Math.min(containerW / logicalW, containerH / logicalH)})`;
-
-  // Сдвигаем граф относительно (0,0) — чтобы он был в центре логического canvas
-  const offsetX = -minX + PAD_X;
-  const offsetY = -minY + PAD_Y;
-  for (const n of nodeMap.values()) {
-    n.x += offsetX;
-    n.y += offsetY;
   }
 
   // ====== Категории ======
@@ -387,6 +346,7 @@
   };
 
   // ====== Инициализация ECharts ======
+  const el = document.getElementById(id);
   const chart = echarts.init(el);
 
   // ====== ДИАГНОСТИКА: если узлов нет — показать что реально пришло ======
