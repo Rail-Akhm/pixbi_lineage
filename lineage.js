@@ -260,23 +260,33 @@
   }
   const bbW = maxX - minX;
   const bbH = maxY - minY;
-  const bbCx = (minX + maxX) / 2;
-  const bbCy = (minY + maxY) / 2;
 
-  // --- Получаем реальный размер контейнера и вычисляем zoom ---
+  // --- Получаем размер контейнера ---
   const el = document.getElementById(id);
-  // getBoundingClientRect даст реальные пиксели, но если контейнер ещё не
-  // отрисован — берём window/screen как fallback
-  let cw = el ? el.clientWidth  : (window.innerWidth  || 800);
-  let ch = el ? el.clientHeight : (window.innerHeight || 600);
-  // Отступ от краёв (padding)
+  const containerW = el ? el.clientWidth  : (window.innerWidth  || 800);
+  const containerH = el ? el.clientHeight : (window.innerHeight || 600);
+
+  // --- CSS-масштабирование вместо авто-fit ECharts ---
+  // Растягиваем div до логического размера bounding box,
+  // CSS transform:scale() сожмёт/растянет до реального блока PIX BI.
+  // ECharts получит canvas нужного размера и не будет авто-фитить.
   const PAD_X = 60;
   const PAD_Y = 60;
-  const scale = Math.min(
-    (cw - PAD_X * 2) / Math.max(bbW, 1),
-    (ch - PAD_Y * 2) / Math.max(bbH, 1)
-  );
-  const initialZoom = Math.max(0.2, Math.min(4, scale));
+  const logicalW = bbW + PAD_X * 2;
+  const logicalH = bbH + PAD_Y * 2;
+
+  el.style.width  = logicalW + 'px';
+  el.style.height = logicalH + 'px';
+  el.style.transformOrigin = 'top left';
+  el.style.transform = `scale(${Math.min(containerW / logicalW, containerH / logicalH)})`;
+
+  // Сдвигаем граф относительно (0,0) — чтобы он был в центре логического canvas
+  const offsetX = -minX + PAD_X;
+  const offsetY = -minY + PAD_Y;
+  for (const n of nodeMap.values()) {
+    n.x += offsetX;
+    n.y += offsetY;
+  }
 
   // ====== Категории ======
   const catIndex = {};
@@ -368,13 +378,6 @@
 
     // Ограничение зума
     scaleLimit: { min: 0.3, max: 4 },
-
-    // Фиксируем исходный zoom/center, чтобы ECharts не fit-ил автоматически
-    initLayout: {
-      x: bbCx,
-      y: bbCy,
-      zoom: initialZoom
-    },
 
     // Анимация (только начальный рендер)
     animation: true,
