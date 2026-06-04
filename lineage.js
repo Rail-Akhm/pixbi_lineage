@@ -215,34 +215,35 @@
   }
 
   // ====== Позиционирование узлов по слоям (горизонтально) ======
-  // Теперь слои располагаются слева направо (x по слою, y внутри слоя —
+  // Слои располагаются слева направо (x по слою, y внутри слоя —
   // вертикальным рядом).
-  const V_GAP = 16;
+  // Фиксированный зазор между нижней гранью одного узла и верхней другого.
+  const NODE_VERTICAL_GAP = 50;   // px между узлами по вертикали
   const NODE_MIN_W = 90;
   const NODE_MAX_W = 180;
-  const NODE_H = 30;
+  const NODE_H = 34;              // немного выше, чтобы вместить 9px шрифт
 
-  // Оцениваем "эталонную" высоту — исходя из самого загруженного слоя
+  // Динамическая ширина узла: чем больше узлов в самом загруженном слое,
+  // тем меньше ширина, чтобы подпись не выходила за края при зуме.
   let maxCount = 0;
   for (const nodes of Object.values(byLayer)) {
     if (nodes.length > maxCount) maxCount = nodes.length;
   }
 
-  // Чтобы весь самый высокий слой умещался в ~4000px (комфортный zoom)
   const TARGET_TOTAL_H = 4000;
   const nodeW = Math.max(NODE_MIN_W, Math.min(NODE_MAX_W,
-    Math.floor((TARGET_TOTAL_H - (maxCount - 1) * V_GAP) / maxCount)
+    Math.floor((TARGET_TOTAL_H - (maxCount - 1) * NODE_VERTICAL_GAP) / maxCount)
   ));
 
   for (const [layer, nodes] of Object.entries(byLayer)) {
     nodes.sort((a, b) => a.name.localeCompare(b.name));
-    const totalH = nodes.length * NODE_H + (nodes.length - 1) * V_GAP;
+    const totalH = nodes.length * NODE_H + (nodes.length - 1) * NODE_VERTICAL_GAP;
     const startY = -totalH / 2;
     const xPos = LAYER_X[layer] ?? 0;
 
     nodes.forEach((n, i) => {
       n.x = xPos;
-      n.y = startY + i * (NODE_H + V_GAP) + NODE_H / 2;
+      n.y = startY + i * (NODE_H + NODE_VERTICAL_GAP) + NODE_H / 2;
       n.symbolSize = [nodeW, NODE_H];
     });
   }
