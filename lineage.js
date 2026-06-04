@@ -262,6 +262,67 @@
     });
   }
 
+  // ====== Базовая конфигурация серии (общая для рендера и подсветки) ======
+  // Вынесено в одно место, чтобы buildHighlightedOption/buildResetOption
+  // отдавали ПОЛНУЮ серию. Иначе replaceMerge:['series'] отбросит type/layout/
+  // categories/symbol и сломает кастомную подсветку (останется только реакция
+  // ECharts на соседние узлы — ровно тот баг, что был раньше).
+  const baseSeries = {
+    type: 'graph',
+    layout: 'none',
+
+    // Интерактивность
+    roam: true,
+    draggable: true,
+
+    // Узлы
+    symbol: 'roundRect',
+    categories,
+    data: nodeData,
+    links: linkList,
+
+    // Направленные стрелки
+    edgeSymbol: ['none', 'arrow'],
+    edgeSymbolSize: [0, 8],
+
+    // Подпись узла (внутри)
+    label: {
+      show: true,
+      position: 'inside',
+      fontSize: 9,
+      color: '#ffffff',
+      fontWeight: 600,
+      fontFamily: FONT_FAMILY,
+      overflow: 'truncate',
+      width: nodeW - 10,
+      formatter: (p) => p.data.name || ''
+    },
+
+    // Стиль ребра по умолчанию
+    lineStyle: {
+      color: '#94a3b8',
+      width: 1.5,
+      curveness: 0.3,
+      opacity: 0.6,
+      cap: 'round'
+    },
+
+    // Подпись ребра (скрыта)
+    edgeLabel: { show: false },
+
+    // Подсветка пути управляется кастомно (mouseover / click)
+    emphasis: { scale: 1.05 },
+
+    // Ограничение зума
+    scaleLimit: { min: 0.3, max: 4 },
+
+    // Анимация (только начальный рендер)
+    animation: true,
+    animationDuration: 600,
+    animationEasing: 'cubicOut',
+    animationDelay: (idx) => idx * 8
+  };
+
   // ====== Инициализация ECharts ======
   const el = document.getElementById(id);
   const chart = echarts.init(el);
@@ -391,66 +452,7 @@
         }
       },
 
-      series: [{
-        type: 'graph',
-        layout: 'none',
-
-        // Интерактивность
-        roam: true,
-        draggable: true,
-        // focusNodeAdjacency отключён — управляем подсветкой пути самостоятельно
-        // focusNodeAdjacency: 'allEdges',
-
-        // Узлы
-        symbol: 'roundRect',
-        categories,
-        data: nodeData,
-        links: linkList,
-
-        // Направленные стрелки
-        edgeSymbol: ['none', 'arrow'],
-        edgeSymbolSize: [0, 8],
-
-        // Подпись узла (внутри)
-        label: {
-          show: true,
-          position: 'inside',
-          fontSize: 9,
-          color: '#ffffff',
-          fontWeight: 600,
-          fontFamily: FONT_FAMILY,
-          overflow: 'truncate',
-          width: nodeW - 10,
-          formatter: (p) => {
-            const name = p.data.name || '';
-            return name;
-          }
-        },
-
-        // Стиль ребра по умолчанию
-        lineStyle: {
-          color: '#94a3b8',
-          width: 1.5,
-          curveness: 0.3,
-          opacity: 0.6,
-          cap: 'round'
-        },
-
-        // Подпись ребра (скрыта)
-        edgeLabel: { show: false },
-
-        // Подсветка пути управляется кастомно (mouseover / click)
-        emphasis: { scale: 1.05 },
-
-        // Разделитель между категориями (слоями)
-        scaleLimit: { min: 0.3, max: 4 },
-
-        // Анимация
-        animation: true,
-        animationDuration: 600,
-        animationEasing: 'cubicOut',
-        animationDelay: (idx) => idx * 8
-      }]
+      series: [baseSeries]
     };
   }
 
@@ -509,6 +511,8 @@
 
     const opt = {
       series: [{
+        ...baseSeries,
+        animation: false,            // без переанимации при наведении
         data: nodeData.map(n => {
           if (n.id === nodeId) {
             return {
@@ -565,9 +569,7 @@
               curveness: 0.3
             }
           };
-        }),
-        emphasis:   { scale: 1.05 },
-        focusNodeAdjacency: false       // подсветку управляем сами
+        })
       }]
     };
     return opt;
@@ -577,10 +579,10 @@
   function buildResetOption() {
     return {
       series: [{
-        data: nodeData.map(n => ({ ...n, symbolSize: n.symbolSize, itemStyle: null })),
-        links: linkList.map(link => ({ ...link, lineStyle: null })),
-        emphasis: { scale: 1.05 },
-        focusNodeAdjacency: false
+        ...baseSeries,
+        animation: false,
+        data: nodeData.map(n => ({ ...n, itemStyle: null })),
+        links: linkList.map(link => ({ ...link, lineStyle: null }))
       }]
     };
   }
