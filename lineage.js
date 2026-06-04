@@ -215,21 +215,22 @@
   }
 
   // ====== Позиционирование узлов по слоям (горизонтально) ======
-  // Слои располагаются слева направо (x по слою, y внутри слоя —
-  // вертикальным рядом).
-  // Фиксированный зазор между нижней гранью одного узла и верхней другого.
-  const NODE_VERTICAL_GAP = 50;   // px между узлами по вертикали
+  // При layout:'none' ECharts автоматически fit-ит граф в canvas — это
+  // пропорционально сжимает ОБЕ оси. Чтобы фиксированные пиксельные зазоры
+  // не "съедались" zoom-ом, мы вычисляем zoom явно из реального размера
+  // контейнера и bounding box графа, и затем задаём zoom/center в серии.
+  const NODE_VERTICAL_GAP = 16;   // фиксированный px между узлами по вертикали
   const NODE_MIN_W = 90;
   const NODE_MAX_W = 180;
-  const NODE_H = 34;              // немного выше, чтобы вместить 9px шрифт
+  const NODE_H = 30;
 
-  // Динамическая ширина узла: чем больше узлов в самом загруженном слое,
-  // тем меньше ширина, чтобы подпись не выходила за края при зуме.
+  // Оцениваем "эталонную" высоту — исходя из самого загруженного слоя
   let maxCount = 0;
   for (const nodes of Object.values(byLayer)) {
     if (nodes.length > maxCount) maxCount = nodes.length;
   }
 
+  // Чтобы весь самый высокий слой умещался в ~4000px (комфортный zoom)
   const TARGET_TOTAL_H = 4000;
   const nodeW = Math.max(NODE_MIN_W, Math.min(NODE_MAX_W,
     Math.floor((TARGET_TOTAL_H - (maxCount - 1) * NODE_VERTICAL_GAP) / maxCount)
@@ -247,6 +248,35 @@
       n.symbolSize = [nodeW, NODE_H];
     });
   }
+
+  // --- Вычисляем bounding box всего графа ---
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const n of nodeMap.values()) {
+    const [w, h] = n.symbolSize;
+    minX = Math.min(minX, n.x - w / 2);
+    maxX = Math.max(maxX, n.x + w / 2);
+    minY = Math.min(minY, n.y - h / 2);
+    maxY = Math.max(maxY, n.y + h / 2);
+  }
+  const bbW = maxX - minX;
+  const bbH = maxY - minY;
+  const bbCx = (minX + maxX) / 2;
+  const bbCy = (minY + maxY) / 2;
+
+  // --- Получаем реальный размер контейнера и вычисляем zoom ---
+  const el = document.getElementById(id);
+  // getBoundingClientRect даст реальные пиксели, но если контейнер ещё не
+  // отрисован — берём window/screen как fallback
+  let cw = el ? el.clientWidth  : (window.innerWidth  || 800);
+  let ch = el ? el.clientHeight : (window.innerHeight || 600);
+  // Отступ от краёв (padding)
+  const PAD_X = 60;
+  const PAD_Y = 60;
+  const scale = Math.min(
+    (cw - PAD_X * 2) / Math.max(bbW, 1),
+    (ch - PAD_Y * 2) / Math.max(bbH, 1)
+  );
+  const initialZoom = Math.max(0.2, Math.min(4, scale));
 
   // ====== Категории ======
   const catIndex = {};
@@ -339,6 +369,13 @@
     // Ограничение зума
     scaleLimit: { min: 0.3, max: 4 },
 
+    // Фиксируем исходный zoom/center, чтобы ECharts не fit-ил автоматически
+    initLayout: {
+      x: bbCx,
+      y: bbCy,
+      zoom: initialZoom
+    },
+
     // Анимация (только начальный рендер)
     animation: true,
     animationDuration: 600,
@@ -347,7 +384,6 @@
   };
 
   // ====== Инициализация ECharts ======
-  const el = document.getElementById(id);
   const chart = echarts.init(el);
 
   // ====== ДИАГНОСТИКА: если узлов нет — показать что реально пришло ======
