@@ -264,7 +264,7 @@
   // графа (см. ниже), поэтому авто-fit ничего не схлопывает — зазоры держатся
   // при любом числе узлов, граф выходит за окно блока (скролл/панорамирование).
   const V_GAP = 24;                       // вертикальный зазор между узлами
-  const LAYER_GAP = NODE_W + 280;         // горизонтальный шаг между слоями (>= ширины узла + запас)
+  const LAYER_GAP = NODE_W + 80;         // горизонтальный шаг между слоями (>= ширины узла + запас)
 
   for (const [layer, nodes] of Object.entries(byLayer)) {
     nodes.sort((a, b) => a.name.localeCompare(b.name));
@@ -406,7 +406,31 @@
   innerEl.style.height = logicalH + 'px';
   el.appendChild(innerEl);
 
+  // ====== Патч addEventListener для wheel (zrender passive → non-passive) ======
+  // zrender в старых версиях ECharts регистрирует wheel как passive,
+  // тогда preventDefault() внутри roam-обработчика не отменяет нативный скролл.
+  // Принудительно делаем wheel non-passive на время init — zrender повесит
+  // свой listener правильно, zoom колёсиком заработает, скролл контейнера
+  // уйдёт. После init восстанавливаем оригинал.
+  const _origAEL = HTMLElement.prototype.addEventListener;
+  HTMLElement.prototype.addEventListener = function (type, listener, options) {
+    let opts = options;
+    if (type === 'wheel') {
+      if (typeof opts === 'boolean') {
+        opts = { capture: opts, passive: false };
+      } else if (typeof opts === 'object' && opts !== null) {
+        opts = { ...opts, passive: false };
+      } else {
+        opts = { passive: false };
+      }
+    }
+    return _origAEL.call(this, type, listener, opts);
+  };
+
   const chart = echarts.init(innerEl);
+
+  // Восстанавливаем после init — нужный listener уже повешан.
+  HTMLElement.prototype.addEventListener = _origAEL;
 
   // ====== Тема ======
   function readTheme() {
