@@ -258,32 +258,25 @@
   }
 
   // ====== Позиционирование узлов по слоям ======
-  const LAYER_GAP = 600;
-  const V_GAP = 16;
-  const NODE_MIN_W = 90;
-  const NODE_MAX_W = 180;
+  const NODE_W = 160;    // фиксированная ширина узла (не сжимается)
   const NODE_H = 30;
-
-  let maxCount = 0;
-  for (const nodes of Object.values(byLayer)) {
-    if (nodes.length > maxCount) maxCount = nodes.length;
-  }
-
-  const TARGET_TOTAL_H = 4000;
-  const nodeW = Math.max(NODE_MIN_W, Math.min(NODE_MAX_W,
-    Math.floor((TARGET_TOTAL_H - (maxCount - 1) * V_GAP) / maxCount)
-  ));
+  // Зазоры в реальных координатах графа. Canvas ECharts делается равным размеру
+  // графа (см. ниже), поэтому авто-fit ничего не схлопывает — зазоры держатся
+  // при любом числе узлов, граф выходит за окно блока (скролл/панорамирование).
+  const V_GAP = 24;                       // вертикальный зазор между узлами
+  const LAYER_GAP = NODE_W + 280;         // горизонтальный шаг между слоями (>= ширины узла + запас)
 
   for (const [layer, nodes] of Object.entries(byLayer)) {
     nodes.sort((a, b) => a.name.localeCompare(b.name));
-    const totalH = nodes.length * NODE_H + (nodes.length - 1) * V_GAP;
+    const step = NODE_H + V_GAP;          // шаг по вертикали (центр-к-центру)
+    const totalH = nodes.length * step - V_GAP;
     const startY = -totalH / 2;
     const xPos = parseInt(layer) * LAYER_GAP;
 
     nodes.forEach((n, i) => {
       n.x = xPos;
-      n.y = startY + i * (NODE_H + V_GAP) + NODE_H / 2;
-      n.symbolSize = [nodeW, NODE_H];
+      n.y = startY + i * step + NODE_H / 2;
+      n.symbolSize = [NODE_W, NODE_H];
     });
   }
 
@@ -320,6 +313,35 @@
     });
   }
 
+  // ====== bbox всех узлов ======
+  let gMinX = Infinity, gMaxX = -Infinity, gMinY = Infinity, gMaxY = -Infinity;
+  for (const n of nodeMap.values()) {
+    if (n.x < gMinX) gMinX = n.x;
+    if (n.x > gMaxX) gMaxX = n.x;
+    if (n.y < gMinY) gMinY = n.y;
+    if (n.y > gMaxY) gMaxY = n.y;
+  }
+
+  // ====== Сдвигаем граф в положительные координаты от (PAD, PAD) ======
+  // Координаты узлов — центры; добавляем половину размера узла в поля.
+  const PAD = 80;
+  const offsetX = -gMinX + NODE_W / 2 + PAD;
+  const offsetY = -gMinY + NODE_H / 2 + PAD;
+  for (const n of nodeMap.values()) { n.x += offsetX; n.y += offsetY; }
+  for (const nd of nodeData)        { nd.x += offsetX; nd.y += offsetY; }
+
+  // ====== Логический размер canvas = размер графа ======
+  // КЛЮЧЕВОЕ: делаем canvas ECharts физически равным размеру всего графа.
+  // Тогда авто-fit ECharts (который и схлопывал узлы в кучу) становится
+  // тождественным — вписывать в свой же размер нечего, масштаб = 1, узлы
+  // натуральные. Граф крупнее окна блока — пользователь прокручивает
+  // обёртку (overflow:auto) или панорамирует мышью (roam).
+  const logicalW = (gMaxX - gMinX) + NODE_W + PAD * 2;
+  const logicalH = (gMaxY - gMinY) + NODE_H + PAD * 2;
+
+  // Центр графа (в новых, сдвинутых координатах).
+  const graphCenter = [logicalW / 2, logicalH / 2];
+
   // ====== Базовая конфигурация серии ======
   const baseSeries = {
     type: 'graph',
@@ -344,7 +366,7 @@
       fontWeight: 600,
       fontFamily: FONT_FAMILY,
       overflow: 'truncate',
-      width: nodeW - 10,
+      width: NODE_W - 10,
       formatter: (p) => p.data.name || ''
     },
 
@@ -373,7 +395,18 @@
     console.error(`Lineage v2: DOM-элемент #${BLOCK_ID} не найден. Проверь BLOCK_ID.`);
     return;
   }
-  const chart = echarts.init(el);
+
+  // Окно блока (el) делаем прокручиваемой областью просмотра. Внутрь кладём
+  // div логического размера всего графа — на нём и рендерим ECharts. Так
+  // canvas физически равен графу, авто-fit не схлопывает узлы, а граф крупнее
+  // окна — прокручивается нативным скроллом (или панорамируется мышью).
+  el.style.overflow = 'auto';
+  const innerEl = document.createElement('div');
+  innerEl.style.width  = logicalW + 'px';
+  innerEl.style.height = logicalH + 'px';
+  el.appendChild(innerEl);
+
+  const chart = echarts.init(innerEl);
 
   // ====== Тема ======
   function readTheme() {
@@ -410,6 +443,7 @@
     const textColor = t.textColor || '#000000';
 
     el.style.background = bgColor;
+    innerEl.style.background = bgColor;
 
     return {
       backgroundColor: bgColor,
@@ -470,8 +504,20 @@
   let currentSig   = themeSignature(currentTheme);
   chart.setOption(buildOption(currentTheme));
 
-  // ====== Адаптивность ======
-  window.addEventListener('resize', () => chart.resize());
+  // ====== Дефолтный фокус: центр графа по центру видимой области ======
+  // Граф крупнее окна блока, поэтому прокручиваем обёртку так, чтобы середина
+  // отрисовки оказалась по центру. PIX BI грузится асинхронно — clientWidth/
+  // Height могут быть ещё нулевыми, поэтому повторяем несколько раз.
+  function centerScroll(tries = 20) {
+    const vw = el.clientWidth, vh = el.clientHeight;
+    if (vw <= 20 || vh <= 20) {
+      if (tries > 0) setTimeout(() => centerScroll(tries - 1), 50);
+      return;
+    }
+    el.scrollLeft = Math.max(0, (logicalW - vw) / 2);
+    el.scrollTop  = Math.max(0, (logicalH - vh) / 2);
+  }
+  centerScroll();
 
   // ====== Кастомная подсветка полного пути ======
   const adjUp   = new Map();
@@ -503,6 +549,20 @@
     return visited;
   }
 
+  // Текущее состояние zoom/center из модели ECharts. Подмешиваем его в
+  // highlight/reset, чтобы replaceMerge серии НЕ сбрасывал ручной зум/пан
+  // пользователя обратно к стартовому виду.
+  function currentView() {
+    try {
+      const model = chart.getModel().getSeriesByIndex(0);
+      const view = model && model.coordinateSystem;
+      if (view && typeof view.getZoom === 'function') {
+        return { zoom: view.getZoom(), center: view.getCenter ? view.getCenter() : graphCenter };
+      }
+    } catch (e) { /* fallback ниже */ }
+    return { zoom: 1, center: graphCenter };
+  }
+
   function buildHighlightedOption(nodeId) {
     const upstream   = getAllUpstream(nodeId, new Set());
     const downstream = getAllDownstream(nodeId, new Set());
@@ -515,15 +575,18 @@
       }
     }
 
+    const view = currentView();
     return {
       series: [{
         ...baseSeries,
+        zoom: view.zoom,
+        center: view.center,
         animation: false,
         data: nodeData.map(n => {
           if (n.id === nodeId) {
             return {
               ...n,
-              symbolSize: [nodeW + 6, NODE_H + 4],
+              symbolSize: [NODE_W + 6, NODE_H + 4],
               itemStyle: {
                 shadowBlur: 18,
                 shadowColor: 'rgba(255,255,255,0.4)',
@@ -569,9 +632,12 @@
   }
 
   function buildResetOption() {
+    const view = currentView();
     return {
       series: [{
         ...baseSeries,
+        zoom: view.zoom,
+        center: view.center,
         animation: false,
         data: nodeData.map(n => ({ ...n, itemStyle: null })),
         links: linkList.map(link => ({ ...link, lineStyle: null }))
