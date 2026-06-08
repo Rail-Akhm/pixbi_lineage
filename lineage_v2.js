@@ -140,6 +140,33 @@
 
   const totalEntries = rows.reduce((sum, r) => sum + r.filter(s => s.value !== '').length, 0);
 
+  // ====== Защита: слишком много данных (вероятно, не выбран фильтр) ======
+  const MAX_ROWS = 1000;
+  if (rows.length > MAX_ROWS) {
+    const el = document.getElementById(BLOCK_ID);
+    if (el) {
+      const chart = echarts.init(el);
+      chart.clear();
+      chart.setOption({
+        backgroundColor: '#fff',
+        graphic: {
+          type: 'text',
+          left: 'center',
+          top: 'center',
+          style: {
+            text: 'Выберите какой-нибудь объект (фильтр),\nчтобы отобразить lineage.',
+            fontSize: 14,
+            fontFamily: FONT_FAMILY,
+            fill: '#555',
+            textAlign: 'center'
+          }
+        }
+      });
+    }
+    console.warn(`Lineage v2: слишком много строк (${rows.length}) — похоже, фильтры не применены. Рендер отменён.`);
+    return;
+  }
+
   // ====== Диагностика: нет данных ======
   if (totalEntries === 0) {
     const el = document.getElementById(BLOCK_ID);
