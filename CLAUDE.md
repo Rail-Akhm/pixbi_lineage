@@ -13,6 +13,7 @@ pixbi_lineage/
 ├── lineage.js        # Кастомная визуализация PIX BI v1 (legacy, одна категория, 5 слоёв)
 ├── lineage_v2.js     # Кастомная визуализация PIX BI v2 (несколько блоков, динамические слои)
 ├── debug.html        # Локальная отладка: мок PIX BI API + CSV → lineage_v2
+├── README.md         # Документация для GitHub
 ├── <dataset>.csv     # Исходный датасет (для анализа, в рантайме не используется)
 └── CLAUDE.md         # Этот файл
 ```
