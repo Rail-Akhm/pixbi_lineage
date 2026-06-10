@@ -285,20 +285,47 @@
   }
 
   // ====== Позиционирование узлов по слоям ======
-  const NODE_W = 160;    // фиксированная ширина узла (не сжимается)
+  const NODE_W = 160;
   const NODE_H = 30;
-  // Зазоры в реальных координатах графа. Canvas ECharts делается равным размеру
-  // графа (см. ниже), поэтому авто-fit ничего не схлопывает — зазоры держатся
-  // при любом числе узлов, граф выходит за окно блока (скролл/панорамирование).
-  const V_GAP = 24;                       // вертикальный зазор между узлами
-  const LAYER_GAP = NODE_W + 80;         // горизонтальный шаг между слоями (>= ширины узла + запас)
+  const V_GAP = 24;
+  const MIN_LAYER_GAP = 80;              // МИНИМАЛЬНЫЙ зазор между слоями ← ПРАВИТЬ ЗДЕСЬ
+  const EMPTY_LAYER_GAP = 30;            // зазор для пустого слоя (без узлов)
+  const COMFORTABLE_GAP = NODE_W + 80;   // комфортный зазор, когда хватает места
+  const PAD = 80;                        // отступ от краёв canvas
+
+  // Динамический зазор: вписываем непустые слои в ширину блока PIX BI.
+  // Если не хватает места — сжимаем до MIN_LAYER_GAP. Пустые слои всегда EMPTY_LAYER_GAP.
+  const _elForW = document.getElementById(BLOCK_ID);
+  const blockW = (_elForW && _elForW.clientWidth > 20) ? _elForW.clientWidth : 800;
+  const availableForGaps = blockW - NODE_W - 2 * PAD;
+  const nonEmptyIdxs = [];
+  for (let i = 0; i < layerCount; i++) {
+    if (byLayer[i] && byLayer[i].length > 0) nonEmptyIdxs.push(i);
+  }
+  const nonEmptyGaps = Math.max(0, nonEmptyIdxs.length - 1);
+  let dynGap = MIN_LAYER_GAP;
+  if (nonEmptyGaps > 0) {
+    const minTotal = nonEmptyGaps * MIN_LAYER_GAP;
+    if (minTotal < availableForGaps) {
+      dynGap = Math.min(COMFORTABLE_GAP, MIN_LAYER_GAP + (availableForGaps - minTotal) / nonEmptyGaps);
+    }
+  }
+  console.log(`Dynamic gap: ${dynGap.toFixed(0)}px (block=${blockW}px, layers=${layerCount}, nonEmpty=${nonEmptyIdxs.length})`);
+
+  // Предвычисляем X-позицию каждого слоя с учётом пустых
+  const layerX = [];
+  layerX[0] = 0;
+  for (let i = 1; i < layerCount; i++) {
+    const prevEmpty = !byLayer[i - 1] || byLayer[i - 1].length === 0;
+    layerX[i] = layerX[i - 1] + (prevEmpty ? EMPTY_LAYER_GAP : dynGap);
+  }
 
   for (const [layer, nodes] of Object.entries(byLayer)) {
     nodes.sort((a, b) => a.name.localeCompare(b.name));
-    const step = NODE_H + V_GAP;          // шаг по вертикали (центр-к-центру)
+    const step = NODE_H + V_GAP;
     const totalH = nodes.length * step - V_GAP;
     const startY = -totalH / 2;
-    const xPos = parseInt(layer) * LAYER_GAP;
+    const xPos = layerX[parseInt(layer)];
 
     nodes.forEach((n, i) => {
       n.x = xPos;
@@ -351,7 +378,6 @@
 
   // ====== Сдвигаем граф в положительные координаты от (PAD, PAD) ======
   // Координаты узлов — центры; добавляем половину размера узла в поля.
-  const PAD = 80;
   const offsetX = -gMinX + NODE_W / 2 + PAD;
   const offsetY = -gMinY + NODE_H / 2 + PAD;
   for (const n of nodeMap.values()) { n.x += offsetX; n.y += offsetY; }
@@ -416,29 +442,50 @@
   };
 
   // ====== Инициализация ECharts ======
-  // Используем DOM-элемент блока для рендера
   const el = document.getElementById(BLOCK_ID);
   if (!el) {
     console.error(`Lineage v2: DOM-элемент #${BLOCK_ID} не найден. Проверь BLOCK_ID.`);
     return;
   }
 
-  // Окно блока (el) делаем прокручиваемой областью просмотра. Внутрь кладём
-  // div логического размера всего графа — на нём и рендерим ECharts. Так
-  // canvas физически равен графу, авто-fit не схлопывает узлы, а граф крупнее
-  // окна — прокручивается нативным скроллом (или панорамируется мышью).
-  el.style.overflow = 'auto';
+  // Структура: фиксированная шапка-легенда + прокручиваемая область с графом.
+  // Шапка не скроллится вместе с графом, всегда видна вверху блока.
+  el.style.display = 'flex';
+  el.style.flexDirection = 'column';
+  el.style.overflow = 'hidden';
+  el.innerHTML = '';
+
+  // --- Шапка с легендой (фиксированная) ---
+  const headerEl = document.createElement('div');
+  headerEl.style.flexShrink = '0';
+  headerEl.style.padding = '2px 8px';
+  headerEl.style.borderBottom = '1px solid rgba(128,128,128,0.15)';
+  el.appendChild(headerEl);
+
+  function renderLegendHTML(textColor) {
+    let h = '<div style="display:flex;flex-wrap:wrap;justify-content:center;gap:3px 12px;">';
+    for (const cat of categories) {
+      h += `<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-family:${FONT_FAMILY};white-space:nowrap;color:${textColor}">`;
+      h += `<span style="display:inline-block;width:14px;height:10px;background:${cat.itemStyle.color};border-radius:2px;flex-shrink:0;"></span>`;
+      h += `<span>${cat.name}</span></span>`;
+    }
+    h += '</div>';
+    return h;
+  }
+
+  // --- Прокручиваемая область с графом ---
+  const scrollEl = document.createElement('div');
+  scrollEl.style.flex = '1';
+  scrollEl.style.overflow = 'auto';
+  scrollEl.style.minHeight = '0';
+  el.appendChild(scrollEl);
+
   const innerEl = document.createElement('div');
   innerEl.style.width  = logicalW + 'px';
   innerEl.style.height = logicalH + 'px';
-  el.appendChild(innerEl);
+  scrollEl.appendChild(innerEl);
 
   // ====== Патч addEventListener для wheel (zrender passive → non-passive) ======
-  // zrender в старых версиях ECharts регистрирует wheel как passive,
-  // тогда preventDefault() внутри roam-обработчика не отменяет нативный скролл.
-  // Принудительно делаем wheel non-passive на время init — zrender повесит
-  // свой listener правильно, zoom колёсиком заработает, скролл контейнера
-  // уйдёт. После init восстанавливаем оригинал.
   const _origAEL = HTMLElement.prototype.addEventListener;
   HTMLElement.prototype.addEventListener = function (type, listener, options) {
     let opts = options;
@@ -494,6 +541,7 @@
     const textColor = t.textColor || '#000000';
 
     el.style.background = bgColor;
+    scrollEl.style.background = bgColor;
     innerEl.style.background = bgColor;
 
     return {
@@ -501,16 +549,6 @@
       textStyle: {
         color: textColor,
         fontFamily: FONT_FAMILY
-      },
-
-      legend: {
-        data: categories.map(c => ({ name: c.name })),
-        top: 6,
-        left: 'center',
-        textStyle: { color: textColor, fontSize: 11, fontFamily: FONT_FAMILY },
-        icon: 'roundRect',
-        itemWidth: 14,
-        itemHeight: 10
       },
 
       tooltip: {
@@ -554,19 +592,20 @@
   let currentTheme = readTheme();
   let currentSig   = themeSignature(currentTheme);
   chart.setOption(buildOption(currentTheme));
+  headerEl.innerHTML = renderLegendHTML(currentTheme.textColor || '#000000');
 
   // ====== Дефолтный фокус: центр графа по центру видимой области ======
   // Граф крупнее окна блока, поэтому прокручиваем обёртку так, чтобы середина
   // отрисовки оказалась по центру. PIX BI грузится асинхронно — clientWidth/
   // Height могут быть ещё нулевыми, поэтому повторяем несколько раз.
   function centerScroll(tries = 20) {
-    const vw = el.clientWidth, vh = el.clientHeight;
+    const vw = scrollEl.clientWidth, vh = scrollEl.clientHeight;
     if (vw <= 20 || vh <= 20) {
       if (tries > 0) setTimeout(() => centerScroll(tries - 1), 50);
       return;
     }
-    el.scrollLeft = Math.max(0, (logicalW - vw) / 2);
-    el.scrollTop  = Math.max(0, (logicalH - vh) / 2);
+    scrollEl.scrollLeft = Math.max(0, (logicalW - vw) / 2);
+    scrollEl.scrollTop  = Math.max(0, (logicalH - vh) / 2);
   }
   centerScroll();
 
@@ -745,6 +784,10 @@
     if (sig !== currentSig) {
       console.log('Theme change detected, re-render lineage graph');
       currentSig = sig;
+      el.style.background = t.bgColor;
+      headerEl.style.background = t.bgColor;
+      scrollEl.style.background = t.bgColor;
+      headerEl.innerHTML = renderLegendHTML(t.textColor || '#000000');
       chart.setOption(buildOption(t), true);
     }
   }
