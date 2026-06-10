@@ -192,8 +192,8 @@ ECharts с `layout:'none'` по умолчанию **авто-вписывает
   `logicalW × logicalH`, и ECharts рендерит **на нём**. Авто-fit становится
   тождественным (вписывать граф в canvas его же размера нечего) → масштаб 1,
   узлы натуральные, зазоры держатся.
-- `scrollEl.style.overflow = 'auto'` — граф крупнее окна блока прокручивается
-  нативно; если влезает — скроллбары не появляются.
+- `scrollEl.style.overflow = 'hidden'` — панорамирование/зум только через
+  ECharts `roam` (иначе scrollEl перехватывает мышь и ломает draggable).
 - После рендера `centerScroll()` ставит середину графа по центру видимой области
   (с повтором — PIX BI грузится асинхронно, `clientWidth/Height` могут быть 0).
 
@@ -201,7 +201,7 @@ ECharts с `layout:'none'` по умолчанию **авто-вписывает
 ```
 el (flex column, overflow:hidden)
 ├── headerEl (flex-shrink:0) — фиксированная HTML-легенда (не скроллится)
-└── scrollEl (flex:1, overflow:auto) — прокручиваемая область
+└── scrollEl (flex:1, overflow:hidden) — область с графом (pan/zoom через roam)
     └── innerEl (logicalW × logicalH) — ECharts canvas
 ```
 Легенда вынесена из ECharts в отдельный HTML (цветные квадраты + названия слоёв)
@@ -217,12 +217,16 @@ el (flex column, overflow:hidden)
   Клик закрепляет (`lockedNodeId`), повторный клик / клик по пустому месту — снимает.
 - **Двойной клик** → сброс.
 - **Тултип**: `_fullName`, `_info` (синим), название слоя + индекс, `refCount`.
-- `roam` (zoom/pan) + `draggable`, `scaleLimit` 0.3..4.
-- Прокрутка графа: нативная (`overflow:auto` на `scrollEl`), плюс
-  панорамирование/зум мышью. Скроллбары появляются только когда граф не влезает
-  в блок. Дефолтный фокус — центр графа (`centerScroll`).
+- `roam` (zoom/pan) + `draggable` (перетаскивание узлов), `scaleLimit` 0.3..4.
+- Панорамирование/зум мышью через roam (scrollEl с overflow:hidden,
+  нативный скролл не используется). Дефолтный фокус — центр графа (`centerScroll`).
 - `currentView()` читает текущий zoom/center из модели ECharts, чтобы подсветка
   пути (`replaceMerge`) не сбрасывала ручной зум/панораму к стартовому виду.
+- `getCurrentPositions()` — читает живые x/y узлов из модели ECharts. Подмешивается
+  в highlight/reset, чтобы replaceMerge не сбрасывал позиции, изменённые драгом.
+- **Перетаскивание узлов**: после драга позиция сохраняется в модели ECharts.
+  `buildHighlightedOption` / `buildResetOption` используют `getCurrentPositions()`,
+  а не статичный `nodeData`, поэтому драг не сбрасывается при hover/click/reset.
 
 ### Тема
 - Адаптивная из `window.themeConfigs`.

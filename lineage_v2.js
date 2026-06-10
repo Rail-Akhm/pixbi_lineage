@@ -141,7 +141,7 @@
   const totalEntries = rows.reduce((sum, r) => sum + r.filter(s => s.value !== '').length, 0);
 
   // ====== Защита: слишком много данных (вероятно, не выбран фильтр) ======
-  const MAX_ROWS = 1000;
+  const MAX_ROWS = 2000;
   if (rows.length > MAX_ROWS) {
     const el = document.getElementById(BLOCK_ID);
     if (el) {
@@ -653,6 +653,28 @@
     return { zoom: 1, center: graphCenter };
   }
 
+  // Читает текущие x/y всех узлов из модели ECharts — чтобы replaceMerge
+  // не сбрасывал позицию узлов, передвинутых драгом пользователя.
+  function getCurrentPositions() {
+    const pos = {};
+    try {
+      const series = chart.getModel().getSeriesByIndex(0);
+      if (series) {
+        const data = series.getData();
+        for (let i = 0; i < data.count(); i++) {
+          const id = data.getId(i);
+          if (id) {
+            const layout = data.getItemLayout(i);
+            if (layout && layout.length >= 2) {
+              pos[id] = { x: layout[0], y: layout[1] };
+            }
+          }
+        }
+      }
+    } catch (e) { /* fallback — вернётся пустой объект */ }
+    return pos;
+  }
+
   function buildHighlightedOption(nodeId) {
     const upstream   = getAllUpstream(nodeId, new Set());
     const downstream = getAllDownstream(nodeId, new Set());
@@ -666,6 +688,7 @@
     }
 
     const view = currentView();
+    const curPos = getCurrentPositions();
     return {
       series: [{
         ...baseSeries,
@@ -673,9 +696,11 @@
         center: view.center,
         animation: false,
         data: nodeData.map(n => {
+          const cp = curPos[n.id];
+          const base = cp ? { ...n, x: cp.x, y: cp.y } : n;
           if (n.id === nodeId) {
             return {
-              ...n,
+              ...base,
               symbolSize: [NODE_W + 6, NODE_H + 4],
               itemStyle: {
                 shadowBlur: 18,
@@ -688,7 +713,7 @@
           if (fullPath.has(n.id)) {
             const isUp = upstream.has(n.id);
             return {
-              ...n,
+              ...base,
               itemStyle: {
                 borderColor: isUp ? '#3b82f6' : '#22c55e',
                 borderWidth: 2,
@@ -700,7 +725,7 @@
             };
           }
           return {
-            ...n,
+            ...base,
             itemStyle: { opacity: 0.15 }
           };
         }),
@@ -723,13 +748,14 @@
 
   function buildResetOption() {
     const view = currentView();
+    const curPos = getCurrentPositions();
     return {
       series: [{
         ...baseSeries,
         zoom: view.zoom,
         center: view.center,
         animation: false,
-        data: nodeData.map(n => ({ ...n, itemStyle: null })),
+        data: nodeData.map(n => { const cp = curPos[n.id]; const b = cp ? { ...n, x: cp.x, y: cp.y } : n; return { ...b, itemStyle: null }; }),
         links: linkList.map(link => ({ ...link, lineStyle: null }))
       }]
     };
