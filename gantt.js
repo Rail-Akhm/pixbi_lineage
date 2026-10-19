@@ -46,7 +46,7 @@
 
   // Версия скрипта — видна в шапке, чтобы можно было убедиться,
   // что PIX BI подхватил новую версию, а не закешировал старую.
-  const GANTT_VERSION = '2.2';
+  const GANTT_VERSION = '2.3';
 
   const ROW_H = 26;          // высота строки, px
   const LEFT_W = 500;        // ширина левой панели (3 колонки)
@@ -67,10 +67,15 @@
   const ROMAN_Q = ['I', 'II', 'III', 'IV'];
   const ROMAN_TO_Q = { I: 1, II: 2, III: 3, IV: 4 };
 
-  // Цвета практик (не пересекаются с синей шкалой часов)
+  // Цвета практик (не пересекаются с синей шкалой часов).
+  // Запас на будущее: 18 различимых цветов; сейчас в данных 2 практики.
+  // Назначаются по алфавиту названий, лишние при появлении новых практик.
   const PRACTICE_COLORS = [
     '#0d9488', '#d97706', '#7c3aed', '#e11d48',
-    '#65a30d', '#0891b2', '#c026d3', '#ea580c'
+    '#65a30d', '#0891b2', '#c026d3', '#ea580c',
+    '#4f46e5', '#059669', '#ca8a04', '#db2777',
+    '#0284c7', '#dc2626', '#7e22ce', '#0f766e',
+    '#92400e', '#4d7c0f'
   ];
 
   // ====== Утилиты ======
@@ -334,6 +339,11 @@
     person: ['full_name', 'Исполнитель', 'ФИО', 'Сотрудник', 'person', 'executor'],
     practice: ['practice', 'Практика', 'практика', 'Отдел'],
     qrt: ['qrt', 'Квартал', 'квартал'],
+    // Описание ЗНИ: явные имена колонок, затем наиболее вероятные поля датасета.
+    zniInfo: [
+      'zniInfo', 'zni_name', 'zni_desc', 'zni_info', 'zni_description',
+      'Описание ЗНИ', 'Название ЗНИ', 'epic_summary', 'summary'
+    ],
     hours: [
       'timeworked_h', 'sum_timeworked_h', 'SUM(timeworked_h)',
       'Сумма timeworked_h', 'Часы', 'часы',
@@ -348,6 +358,29 @@
       if (rec[k] === undefined || rec[k] === null) continue;
       const v = plain(rec[k]);
       if (v !== null && v !== undefined && String(v).trim() !== '') return v;
+    }
+    return null;
+  }
+
+  // Явные метки частей составного ключа: "zni_name=Описание ЗНИ".
+  // Нужны для полей, которые нельзя распознать по форме значения
+  // (описания, статусы): иначе их примут за ФИО, практику и т.п.
+  const KEY_LABELS = {
+    dt: ['dt', 'дата', 'date'],
+    zni: ['zni', 'зни', 'номер_зни', 'zni_number'],
+    person: ['person', 'фио', 'исполнитель', 'сотрудник', 'executor'],
+    practice: ['practice', 'практика', 'отдел'],
+    qrt: ['qrt', 'квартал'],
+    zniInfo: [
+      'zni_name', 'zni_desc', 'zni_info', 'zni_description',
+      'desc', 'описание', 'название', 'summary', 'epic_summary'
+    ]
+  };
+
+  function keyFieldFor(label) {
+    const l = String(label).toLowerCase().replace(/ё/g, 'е').trim();
+    for (const field of Object.keys(KEY_LABELS)) {
+      if (KEY_LABELS[field].indexOf(l) !== -1) return field;
     }
     return null;
   }
@@ -389,7 +422,7 @@
   }
 
   // ====== Нормализация строк ======
-  // Внутренняя запись: { dtMs, zni, person, practice, qrt, hours }
+  // Внутренняя запись: { dtMs, zni, person, practice, qrt, hours, zniInfo }
   // Каждое поле читается из своей колонки таблицы — без склейки в один ключ.
   let normStats = null; // заполняется в normalizeData, печатается в диагностике
   function normalizeData(data) {
@@ -399,7 +432,7 @@
       dtSample: null, zniSample: null, hoursSample: null
     };
 
-    function pushRecord(dtMs, zni, person, practice, qrt, hours) {
+    function pushRecord(dtMs, zni, person, practice, qrt, hours, zniInfo) {
       if (!Number.isFinite(dtMs) || !zni) return;
       stats.ok++;
       out.push({
@@ -408,7 +441,8 @@
         person: String(person == null ? '' : person).trim() || '—',
         practice: String(practice == null ? '' : practice).trim() || '—',
         qrt: String(qrt == null ? '' : qrt).trim(),
-        hours: Number.isFinite(hours) ? hours : 0
+        hours: Number.isFinite(hours) ? hours : 0,
+        zniInfo: String(zniInfo == null ? '' : zniInfo).trim()
       });
     }
 
@@ -441,7 +475,8 @@
         fieldOf(rec, FIELDS.person),
         fieldOf(rec, FIELDS.practice),
         fieldOf(rec, FIELDS.qrt),
-        hours
+        hours,
+        fieldOf(rec, FIELDS.zniInfo)
       );
     }
 
@@ -489,13 +524,27 @@
         if (v == null) continue;
         const s = String(v).trim();
         if (!s) continue;
+
+        // Явная метка части: "zni_name=Описание ЗНИ". Позволяет добавлять
+        // в ключ любые текстовые поля, не ломая распознавание по форме.
+        const lm = /^([A-Za-zА-Яа-яЁё_]{1,40})\s*=\s*([\s\S]*)$/.exec(s);
+        if (lm) {
+          const field = keyFieldFor(lm[1]);
+          const val = lm[2].trim();
+          if (field && val !== '') {
+            if (rec[field] === undefined) rec[field] = val;
+            continue;
+          }
+        }
+
         if (rec.dt === undefined && looksLikeDate(s)) { rec.dt = s; continue; }
         rest.push(s);
       }
 
       // Квартал: 2026-I / 2026-II / 2026-Q1
       for (let i = 0; i < rest.length; i++) {
-        if (/^(19|20)\d{2}\s*[-_/]?\s*(I|II|III|IV|Q[1-4])$/i.test(rest[i])) {
+        if (rec.qrt === undefined &&
+          /^(19|20)\d{2}\s*[-_/]?\s*(I|II|III|IV|Q[1-4])$/i.test(rest[i])) {
           rec.qrt = rest.splice(i, 1)[0];
           break;
         }
@@ -503,12 +552,16 @@
 
       // ЗНИ — обычно длинное число
       for (let i = 0; i < rest.length; i++) {
-        if (/^\d{4,}$/.test(rest[i])) { rec.zni = rest.splice(i, 1)[0]; break; }
+        if (rec.zni === undefined && /^\d{4,}$/.test(rest[i])) {
+          rec.zni = rest.splice(i, 1)[0];
+          break;
+        }
       }
 
       // Практика/отдел — по характерным словам
       for (let i = 0; i < rest.length; i++) {
-        if (/практик|отдел|департамент|управлен|направлен|служб|групп/i.test(rest[i])) {
+        if (rec.practice === undefined &&
+          /практик|отдел|департамент|управлен|направлен|служб|групп/i.test(rest[i])) {
           rec.practice = rest.splice(i, 1)[0];
           break;
         }
@@ -516,7 +569,9 @@
 
       // Исполнитель — ФИО из 2+ слов
       for (let i = 0; i < rest.length; i++) {
-        if (rest[i].split(/\s+/).length >= 2 && /[A-Za-zА-Яа-яЁё]/.test(rest[i])) {
+        if (rec.person === undefined &&
+          rest[i].split(/\s+/).length >= 2 &&
+          /[A-Za-zА-Яа-яЁё]/.test(rest[i])) {
           rec.person = rest.splice(i, 1)[0];
           break;
         }
@@ -847,10 +902,18 @@
       const k = r.zni + '\u0001' + r.person + '\u0001' + r.dtMs;
       let cell = cells.get(k);
       if (!cell) {
-        cell = { dtMs: r.dtMs, zni: r.zni, person: r.person, practice: r.practice, hours: 0 };
+        cell = {
+          dtMs: r.dtMs, zni: r.zni, person: r.person,
+          practice: r.practice, hours: 0, zniInfo: r.zniInfo || ''
+        };
         cells.set(k, cell);
-      } else if (cell.practice === '—' && r.practice !== '—') {
-        cell.practice = r.practice;
+      } else {
+        if (cell.practice === '—' && r.practice !== '—') {
+          cell.practice = r.practice;
+        }
+        if (r.zniInfo && r.zniInfo.length > cell.zniInfo.length) {
+          cell.zniInfo = r.zniInfo;
+        }
       }
       cell.hours += r.hours;
 
@@ -863,8 +926,14 @@
     for (const c of cells.values()) {
       let g = groups.get(c.zni);
       if (!g) {
-        g = { zni: c.zni, execs: new Map(), agg: new Map(), practices: new Set() };
+        g = {
+          zni: c.zni, zniInfo: '', execs: new Map(),
+          agg: new Map(), practices: new Set()
+        };
         groups.set(c.zni, g);
+      }
+      if (c.zniInfo && c.zniInfo.length > g.zniInfo.length) {
+        g.zniInfo = c.zniInfo;
       }
       let ex = g.execs.get(c.person);
       if (!ex) {
@@ -922,6 +991,11 @@
 
   const practiceColorMap = new Map(
     practiceNames.map((p, i) => [p, PRACTICE_COLORS[i % PRACTICE_COLORS.length]])
+  );
+
+  // Описание ЗНИ (необязательная часть gantt_key) — для подсказки слева.
+  const zniInfoMap = new Map(
+    model.groups.map((g) => [g.zni, g.zniInfo || ''])
   );
 
   // ====== Тема ======
@@ -1023,6 +1097,10 @@
   vthumbEl.className = 'pg-vthumb';
   vbarEl.appendChild(vthumbEl);
 
+  // Подсказка с описанием ЗНИ при наведении на левую колонку.
+  const ztipEl = document.createElement('div');
+  ztipEl.className = 'pg-ztip';
+
   // Стили (один раз на страницу)
   const STYLE_ID = 'pixbi-gantt-style';
   // Стили перезаписываем на каждом запуске: в SPA PIX BI старый <style>
@@ -1050,7 +1128,11 @@
     '.pg-vthumb{position:absolute;left:1px;width:8px;border-radius:4px;cursor:grab;',
     'background:rgba(100,116,139,.5)}',
     '.pg-vthumb:hover{background:rgba(100,116,139,.75)}',
-    '.pg-vdragging .pg-vthumb{cursor:grabbing}'
+    '.pg-vdragging .pg-vthumb{cursor:grabbing}',
+    '.pg-ztip{position:absolute;z-index:11;display:none;pointer-events:none;',
+    'max-width:360px;padding:7px 10px;border-radius:7px;border:1px solid;',
+    'box-shadow:0 4px 18px rgba(0,0,0,.18);font-family:' + FONT_FAMILY + ';',
+    'font-size:12px;line-height:1.45;white-space:normal;word-break:break-word}'
   ].join('');
 
   if (!document.getElementById(STYLE_ID)) {
@@ -1701,7 +1783,7 @@
       '</span>' +
       '<span class="pg-ver" style="color:' + theme.faint +
         ';font-size:10px;opacity:.75" title="Версия gantt.js: ' +
-        GANTT_VERSION + ' (вертикальная прокрутка списка ЗНИ)">v' +
+        GANTT_VERSION + ' (описание ЗНИ по наведению на номер)">v' +
         GANTT_VERSION + '</span>';
   }
 
@@ -1737,6 +1819,7 @@
 
   // ====== Вертикальное окно ======
   function applyYWindow() {
+    hideZTip();
     const nRows = viewRows.length;
     if (!nRows) return;
     const N = Math.min(nRows, visibleRowCount());
@@ -1798,6 +1881,38 @@
     applyYWindow();
   }
 
+  // ====== Подсказка с описанием ЗНИ (левая колонка) ======
+  function hideZTip() {
+    if (ztipEl.style.display !== 'none') ztipEl.style.display = 'none';
+  }
+
+  function showZTip(row, pt) {
+    const info = row ? zniInfoMap.get(row.zni) : '';
+    if (!info) { hideZTip(); return; }
+
+    const theme = state.theme;
+    ztipEl.innerHTML =
+      '<div style="font-weight:700;font-size:13px;margin-bottom:2px">ЗНИ ' +
+        escHtml(row.zni) + '</div>' +
+      '<div style="color:' + theme.muted + '">' + escHtml(info) + '</div>';
+    ztipEl.style.background = theme.tooltipBg;
+    ztipEl.style.borderColor = theme.border;
+    ztipEl.style.color = theme.text;
+    ztipEl.style.display = 'block';
+
+    // Позиция у курсора с прижатием к краям блока.
+    const maxW = chartEl.clientWidth || 0;
+    const maxH = chartEl.clientHeight || 0;
+    const w = ztipEl.offsetWidth;
+    const h = ztipEl.offsetHeight;
+    let left = pt.x + 14;
+    let top = pt.y + 14;
+    if (left + w > maxW - 4) left = Math.max(4, pt.x - w - 12);
+    if (top + h > maxH - 4) top = Math.max(4, pt.y - h - 10);
+    ztipEl.style.left = Math.round(left) + 'px';
+    ztipEl.style.top = Math.round(top) + 'px';
+  }
+
   // ====== Инициализация ECharts ======
   // Патч passive, иначе wheel нельзя preventDefault (как в lineage_v2)
   const _origAEL = HTMLElement.prototype.addEventListener;
@@ -1818,6 +1933,7 @@
   }
 
   chartEl.appendChild(vbarEl);
+  chartEl.appendChild(ztipEl);
 
   el.__pixbiGanttChart = chart;
 
@@ -1845,6 +1961,18 @@
         if (c.value[1] < visN && h > bestH) { bestH = h; best = i; }
       });
       return best;
+    },
+    // Стенд: показать подсказку описания для строки (без реального hover).
+    zTipAt(rowIndex) {
+      const row = viewRows[Number(rowIndex)];
+      if (!row) return false;
+      let y = 40;
+      try {
+        const py = chart.convertToPixel({ yAxisIndex: 0 }, Number(rowIndex));
+        if (Number.isFinite(py)) y = py;
+      } catch (e) { /* ось ещё не готова */ }
+      showZTip(row, { x: 40, y: y });
+      return ztipEl.style.display !== 'none';
     },
     getState() {
       return {
@@ -1897,15 +2025,26 @@
   // Курсор над сворачиваемыми группами
   chart.getZr().on('mousemove', function (e) {
     if (e.offsetX >= LEFT_W) {
+      hideZTip();
       if (chartEl.style.cursor) chartEl.style.cursor = '';
       return;
     }
     const pt = chart.convertFromPixel({ yAxisIndex: 0 }, e.offsetY);
     let idx = Math.round(Number(pt));
-    const row = viewRows[idx];
+    const row = Number.isFinite(idx) ? viewRows[idx] : null;
+
+    // Описание ЗНИ — только над первой колонкой (номер ЗНИ).
+    if (row && e.offsetX <= COL_ZNI + 12) {
+      showZTip(row, { x: e.offsetX, y: e.offsetY });
+    } else {
+      hideZTip();
+    }
+
     chartEl.style.cursor = row && row.kind === 'group' && !row.noExecs
       ? 'pointer' : '';
   });
+
+  chart.getZr().on('globalout', hideZTip);
 
   // Колесо: вертикальный скролл; Ctrl/Cmd + колесо — зум по времени
   chart.getZr().on('mousewheel', function (e) {

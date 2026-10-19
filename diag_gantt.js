@@ -32,6 +32,28 @@
   const SEPS = ['|~|', '\u001F', '§', '||'];
   const SEP_NAMES = { '|~|': '|~|', '\u001F': '\\u001F', '§': '§', '||': '||' };
 
+  // Явные метки частей ключа: "zni_name=Описание ЗНИ".
+  const KEY_LABELS = {
+    dt: ['dt', 'дата', 'date'],
+    zni: ['zni', 'зни', 'номер_зни', 'zni_number'],
+    person: ['person', 'фио', 'исполнитель', 'сотрудник', 'executor'],
+    practice: ['practice', 'практика', 'отдел'],
+    qrt: ['qrt', 'квартал'],
+    zniInfo: [
+      'zni_name', 'zni_desc', 'zni_info', 'zni_description',
+      'desc', 'описание', 'название', 'summary', 'epic_summary'
+    ]
+  };
+
+  function keyFieldFor(label) {
+    const l = String(label).toLowerCase().replace(/ё/g, 'е').trim();
+    const fields = Object.keys(KEY_LABELS);
+    for (let i = 0; i < fields.length; i++) {
+      if (KEY_LABELS[fields[i]].indexOf(l) !== -1) return fields[i];
+    }
+    return null;
+  }
+
   const FONT =
     '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif';
 
@@ -195,17 +217,31 @@
       return String(p == null ? '' : p).trim();
     }).filter(function (p) { return p !== ''; });
 
-    const rec = { dt: null, zni: null, person: null, practice: null, qrt: null };
+    const rec = {
+      dt: null, zni: null, person: null, practice: null, qrt: null, zniInfo: null
+    };
     const rest = [];
-    const dateIdx = [];
 
+    // Явные метки вида "zni_name=Описание": поле задаётся меткой, а не формой,
+    // поэтому описание может быть любой длины и содержать любые символы.
     for (let i = 0; i < parts.length; i++) {
-      if (!rec.dt && looksLikeDate(parts[i])) {
-        rec.dt = parts[i];
-        dateIdx.push(i);
-        continue;
+      const lm = /^([A-Za-zА-Яа-яЁё_]{1,40})\s*=\s*([\s\S]*)$/.exec(parts[i]);
+      if (lm) {
+        const field = keyFieldFor(lm[1]);
+        const val = lm[2].trim();
+        if (field && val !== '') {
+          if (!rec[field]) rec[field] = val;
+          continue;
+        }
       }
       rest.push(parts[i]);
+    }
+
+    for (let i = 0; i < rest.length; i++) {
+      if (!rec.dt && looksLikeDate(rest[i])) {
+        rec.dt = rest.splice(i, 1)[0];
+        i--;
+      }
     }
 
     for (let i = 0; i < rest.length; i++) {
@@ -308,7 +344,7 @@
       seps: {},
       partCounts: {},
       zni: new Set(), persons: new Set(), practices: new Set(),
-      qrts: new Set(), days: new Set(),
+      qrts: new Set(), days: new Set(), infos: new Set(),
       minDay: null, maxDay: null, hours: 0,
       samples: [], bad: []
     };
@@ -351,6 +387,7 @@
       if (r.person) stats.persons.add(r.person);
       if (r.practice) stats.practices.add(r.practice);
       if (r.qrt) stats.qrts.add(r.qrt);
+      if (r.zniInfo) stats.infos.add(r.zniInfo);
       if (day) {
         stats.days.add(day);
         if (!stats.minDay || day < stats.minDay) stats.minDay = day;
@@ -397,6 +434,8 @@
     push('дней: ' + stats.days.size +
       (stats.minDay ? ' · период: ' + stats.minDay + ' .. ' + stats.maxDay : ''));
     push('сумма часов: ' + (Math.round(stats.hours * 100) / 100));
+    push('описаний ЗНИ (метка zni_name=…): ' + stats.infos.size +
+      (stats.infos.size ? '' : ' — тултип по номеру ЗНИ будет без описания'));
 
     if (stats.samples.length) {
       push('');

@@ -277,6 +277,23 @@ window.getItemData = async function () {
       }))
     };
   }
+  // Ключ с описанием ЗНИ: "dt|~|zni|~|фио|~|практика|~|qrt|~|zni_name=…".
+  if (format === 'keydesc') {
+    const info = new Map();
+    for (const r of parsedRows) {
+      const z = String(r.zni_number || '').trim();
+      const d = String(r.epic_summary || '').trim();
+      if (z && d && (!info.get(z) || d.length > info.get(z).length)) info.set(z, d);
+    }
+    return {
+      categories: source.map((r) => ({
+        name: [r.dt, r.zni_number, r.full_name, r.practice, r.qrt].join('|~|') +
+          '|~|zni_name=' + (info.get(String(r.zni_number || '').trim()) || ''),
+        series: [{ name: "SUM('v_serv_jira_zni_gant'[timeworked_h])", value: String(r.timeworked_h) }],
+        extra_hints: []
+      }))
+    };
+  }
   // Универсальный режим «всего 2 поля»: категория + дата.
   if (format === 'key2') {
     return {
@@ -416,8 +433,9 @@ loadDemoCsv();
   const qrt = params.get('qrt');
   const collapse = params.get('collapse');
   const tip = params.get('tip');
+  const ztip = params.get('ztip');
   const y = params.get('y');
-  if (!qrt && !collapse && !tip && y === null) return;
+  if (!qrt && !collapse && !tip && ztip === null && y === null) return;
 
   const timer = setInterval(function () {
     const wrap = document.getElementById(BLOCK_ID);
@@ -428,6 +446,9 @@ loadDemoCsv();
     if (collapse === '1') api.setCollapsed(true);
     if (collapse === '0') api.setCollapsed(false);
     if (y !== null && api.scrollTo) api.scrollTo(Number(y));
+    if (ztip !== null && api.zTipAt) {
+      setTimeout(function () { api.zTipAt(Number(ztip)); }, 600);
+    }
     if (tip === '1') {
       setTimeout(function () {
         const ch = wrap.__pixbiGanttChart;
