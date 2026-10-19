@@ -394,6 +394,15 @@ loadDemoCsv();
 (function applyUrlParams() {
   const params = new URLSearchParams(location.search);
 
+  // Регрессия: старый <style> от предыдущего запуска визуала (SPA PIX BI).
+  // gantt.js должен перезаписать его, а не пропустить вставку.
+  if (params.get('stale') === '1') {
+    const old = document.createElement('style');
+    old.id = 'pixbi-gantt-style';
+    old.textContent = '.pg-head{display:flex}';
+    document.head.appendChild(old);
+  }
+
   if (params.get('raw') === '1') {
     document.getElementById('aggregate').checked = false;
   }
@@ -407,7 +416,8 @@ loadDemoCsv();
   const qrt = params.get('qrt');
   const collapse = params.get('collapse');
   const tip = params.get('tip');
-  if (!qrt && !collapse && !tip) return;
+  const y = params.get('y');
+  if (!qrt && !collapse && !tip && y === null) return;
 
   const timer = setInterval(function () {
     const wrap = document.getElementById(BLOCK_ID);
@@ -417,6 +427,7 @@ loadDemoCsv();
     if (qrt) api.setQrt(qrt);
     if (collapse === '1') api.setCollapsed(true);
     if (collapse === '0') api.setCollapsed(false);
+    if (y !== null && api.scrollTo) api.scrollTo(Number(y));
     if (tip === '1') {
       setTimeout(function () {
         const ch = wrap.__pixbiGanttChart;

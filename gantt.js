@@ -44,6 +44,10 @@
   // категорию блока; остальные поля приходится склеивать в одно.
   const KEY_SEP = '|~|';
 
+  // Версия скрипта — видна в шапке, чтобы можно было убедиться,
+  // что PIX BI подхватил новую версию, а не закешировал старую.
+  const GANTT_VERSION = '2.2';
+
   const ROW_H = 26;          // высота строки, px
   const LEFT_W = 500;        // ширина левой панели (3 колонки)
   const GRID_TOP = 46;       // место под подписи месяцев (ось сверху)
@@ -1012,30 +1016,49 @@
   chartEl.className = 'pg-chart';
   el.appendChild(chartEl);
 
+  // Вертикальная «крутилка» списка ЗНИ (кастомная, поверх canvas).
+  const vbarEl = document.createElement('div');
+  vbarEl.className = 'pg-vbar';
+  const vthumbEl = document.createElement('div');
+  vthumbEl.className = 'pg-vthumb';
+  vbarEl.appendChild(vthumbEl);
+
   // Стили (один раз на страницу)
   const STYLE_ID = 'pixbi-gantt-style';
+  // Стили перезаписываем на каждом запуске: в SPA PIX BI старый <style>
+  // остаётся в <head> после повторного рендера визуала, и без перезаписи
+  // новые правила (например, .pg-vbar) не применялись бы.
+  const CSS = [
+    '.pg-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;',
+    'padding:6px 10px;flex-shrink:0;border-bottom:1px solid;font-family:' + FONT_FAMILY + '}',
+    '.pg-cap{font-size:11px;white-space:nowrap}',
+    '.pg-select{font-family:' + FONT_FAMILY + ';font-size:12px;padding:3px 8px;border-radius:6px;',
+    'border:1px solid;outline:none;cursor:pointer;min-width:150px}',
+    '.pg-legend{display:flex;align-items:center;gap:6px}',
+    '.pg-bar{display:inline-block;width:120px;height:10px;border-radius:3px}',
+    '.pg-btn{font-family:' + FONT_FAMILY + ';font-size:11px;padding:3px 9px;border-radius:6px;',
+    'border:1px solid;background:transparent;cursor:pointer;white-space:nowrap}',
+    '.pg-btn:hover{opacity:.75}',
+    '.pg-spacer{flex:1 1 auto}',
+    '.pg-stats{white-space:nowrap;font-size:11px}',
+    '.pg-range{white-space:nowrap;font-size:11px}',
+    '.pg-warn{color:#dc2626;font-size:11px;font-weight:600;white-space:nowrap}',
+    '.pg-chart{flex:1 1 auto;min-height:0;width:100%;position:relative}',
+    '.pg-vbar{position:absolute;right:2px;z-index:10;width:10px;display:none;',
+    'border-radius:5px;touch-action:none;user-select:none}',
+    '.pg-vbar:hover,.pg-vbar.pg-vdragging{background:rgba(128,128,128,.12)}',
+    '.pg-vthumb{position:absolute;left:1px;width:8px;border-radius:4px;cursor:grab;',
+    'background:rgba(100,116,139,.5)}',
+    '.pg-vthumb:hover{background:rgba(100,116,139,.75)}',
+    '.pg-vdragging .pg-vthumb{cursor:grabbing}'
+  ].join('');
+
   if (!document.getElementById(STYLE_ID)) {
     const st = document.createElement('style');
     st.id = STYLE_ID;
-    st.textContent = [
-      '.pg-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;',
-      'padding:6px 10px;flex-shrink:0;border-bottom:1px solid;font-family:' + FONT_FAMILY + '}',
-      '.pg-cap{font-size:11px;white-space:nowrap}',
-      '.pg-select{font-family:' + FONT_FAMILY + ';font-size:12px;padding:3px 8px;border-radius:6px;',
-      'border:1px solid;outline:none;cursor:pointer;min-width:150px}',
-      '.pg-legend{display:flex;align-items:center;gap:6px}',
-      '.pg-bar{display:inline-block;width:120px;height:10px;border-radius:3px}',
-      '.pg-btn{font-family:' + FONT_FAMILY + ';font-size:11px;padding:3px 9px;border-radius:6px;',
-      'border:1px solid;background:transparent;cursor:pointer;white-space:nowrap}',
-      '.pg-btn:hover{opacity:.75}',
-      '.pg-spacer{flex:1 1 auto}',
-      '.pg-stats{white-space:nowrap;font-size:11px}',
-      '.pg-range{white-space:nowrap;font-size:11px}',
-      '.pg-warn{color:#dc2626;font-size:11px;font-weight:600;white-space:nowrap}',
-      '.pg-chart{flex:1 1 auto;min-height:0;width:100%;position:relative}'
-    ].join('');
     document.head.appendChild(st);
   }
+  document.getElementById(STYLE_ID).textContent = CSS;
 
   let chart = null;
   let isRendering = false;
@@ -1675,7 +1698,11 @@
             plural(viewStats.persons, 'исполнитель', 'исполнителя', 'исполнителей')
           : '') +
         ' · ' + fmtHours(viewStats.hours) +
-      '</span>';
+      '</span>' +
+      '<span class="pg-ver" style="color:' + theme.faint +
+        ';font-size:10px;opacity:.75" title="Версия gantt.js: ' +
+        GANTT_VERSION + ' (вертикальная прокрутка списка ЗНИ)">v' +
+        GANTT_VERSION + '</span>';
   }
 
   // ====== Полный рендер ======
@@ -1701,6 +1728,11 @@
 
     renderHeader(theme);
     applyYWindow();
+
+    // PIX BI может отдать размеры блока позже — повторяем позиционирование
+    setTimeout(function () {
+      if (chart) updateVBar(state.theme);
+    }, 150);
   }
 
   // ====== Вертикальное окно ======
@@ -1718,6 +1750,52 @@
       startValue: String(state.yStart),
       endValue: String(yEnd)
     });
+
+    updateVBar(state.theme);
+  }
+
+  // ====== Вертикальная крутилка списка ЗНИ ======
+  function rowsWindow() {
+    const nRows = viewRows.length;
+    const N = Math.min(nRows, visibleRowCount());
+    return { nRows, N, maxScroll: Math.max(0, nRows - N) };
+  }
+
+  function vbarTrackHeight() {
+    return Math.max(0, (chartEl.clientHeight || 0) - GRID_TOP - GRID_BOTTOM);
+  }
+
+  function updateVBar(theme) {
+    theme = theme || state.theme;
+    const w = rowsWindow();
+    const trackH = vbarTrackHeight();
+
+    if (!w.nRows || w.nRows <= w.N || trackH <= 0) {
+      vbarEl.style.display = 'none';
+      return;
+    }
+
+    vbarEl.style.display = 'block';
+    vbarEl.style.top = GRID_TOP + 'px';
+    vbarEl.style.height = trackH + 'px';
+
+    const thumbH = Math.max(28, Math.round(trackH * w.N / w.nRows));
+    const maxTop = Math.max(0, trackH - thumbH);
+    const top = w.maxScroll > 0
+      ? Math.round(maxTop * state.yStart / w.maxScroll)
+      : 0;
+
+    vthumbEl.style.height = thumbH + 'px';
+    vthumbEl.style.top = top + 'px';
+    vthumbEl.style.background = theme.dark
+      ? 'rgba(148,163,184,.5)'
+      : 'rgba(100,116,139,.5)';
+  }
+
+  function scrollRows(delta) {
+    const w = rowsWindow();
+    state.yStart = clamp(state.yStart + delta, 0, w.maxScroll);
+    applyYWindow();
   }
 
   // ====== Инициализация ECharts ======
@@ -1739,6 +1817,8 @@
     HTMLElement.prototype.addEventListener = _origAEL;
   }
 
+  chartEl.appendChild(vbarEl);
+
   el.__pixbiGanttChart = chart;
 
   // Отладочный API для локального стенда debug_gantt.html
@@ -1751,6 +1831,11 @@
       render();
     },
     setCollapsed(collapsed) { setAllCollapsed(!!collapsed); },
+    scrollTo(y) {
+      const w = rowsWindow();
+      state.yStart = clamp(Math.round(Number(y) || 0), 0, w.maxScroll);
+      applyYWindow();
+    },
     getTipCell() {
       const visN = visibleRowCount();
       let best = -1;
@@ -1844,6 +1929,61 @@
       0,
       Math.max(0, nRows - N)
     );
+    applyYWindow();
+  });
+
+  // ====== Крутилка: колесо, перетаскивание, клик по треку ======
+  vbarEl.addEventListener('wheel', function (ev) {
+    if (ev.preventDefault) ev.preventDefault();
+    const step = Math.max(1,
+      Math.round((Math.abs(ev.deltaY) || 100) > 60 ? 3 : 1));
+    scrollRows(ev.deltaY > 0 ? step : -step);
+  }, { passive: false });
+
+  let vDrag = null;
+
+  vthumbEl.addEventListener('pointerdown', function (ev) {
+    const w = rowsWindow();
+    if (!w.maxScroll) return;
+    if (ev.preventDefault) ev.preventDefault();
+    const trackH = vbarTrackHeight();
+    vDrag = {
+      y: ev.clientY,
+      start: state.yStart,
+      maxScroll: w.maxScroll,
+      range: Math.max(1, trackH - vthumbEl.offsetHeight)
+    };
+    vbarEl.classList.add('pg-vdragging');
+    try { vthumbEl.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+  });
+
+  vthumbEl.addEventListener('pointermove', function (ev) {
+    if (!vDrag) return;
+    const delta = Math.round(
+      (ev.clientY - vDrag.y) / vDrag.range * vDrag.maxScroll
+    );
+    state.yStart = clamp(vDrag.start + delta, 0, vDrag.maxScroll);
+    applyYWindow();
+  });
+
+  function endVDrag() {
+    if (!vDrag) return;
+    vDrag = null;
+    vbarEl.classList.remove('pg-vdragging');
+  }
+
+  vthumbEl.addEventListener('pointerup', endVDrag);
+  vthumbEl.addEventListener('pointercancel', endVDrag);
+
+  // Клик по треку — прыжок к позиции
+  vbarEl.addEventListener('pointerdown', function (ev) {
+    if (ev.target === vthumbEl) return;
+    const w = rowsWindow();
+    if (!w.maxScroll) return;
+    if (ev.preventDefault) ev.preventDefault();
+    const rect = vbarEl.getBoundingClientRect();
+    const ratio = clamp((ev.clientY - rect.top) / Math.max(1, rect.height), 0, 1);
+    state.yStart = Math.round(ratio * w.maxScroll);
     applyYWindow();
   });
 
