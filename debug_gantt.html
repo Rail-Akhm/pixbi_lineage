@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PIXBI Gantt — локальная отладка</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --toolbar-bg: #ffffff;
+    --toolbar-border: #e2e8f0;
+    --page-bg: #f1f5f9;
+    --text: #0f172a;
+    --muted: #64748b;
+  }
+  body.dark {
+    --toolbar-bg: #0f172a;
+    --toolbar-border: #1e293b;
+    --page-bg: #020617;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #toolbar {
+    padding: 8px 16px;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--toolbar-border);
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    font-size: 13px;
+  }
+  #toolbar label {
+    font-size: 13px;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  #toolbar button {
+    padding: 6px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid var(--toolbar-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+  }
+  #toolbar button:hover { opacity: .7; }
+  #toolbar select {
+    font-size: 13px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--toolbar-border);
+    background: var(--toolbar-bg);
+    color: var(--text);
+  }
+  #status { font-size: 12px; color: var(--muted); }
+  .hint { font-size: 12px; color: var(--muted); margin-left: auto; }
+  #chart-wrap { flex: 1 1 auto; min-height: 0; }
+  #chart-wrap > div { width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <label>CSV: <input type="file" id="file" accept=".csv"></label>
+  <button id="load-demo">Загрузить demo CSV</button>
+  <label><input type="checkbox" id="aggregate" checked> агрегировать как PIX BI</label>
+  <label><input type="checkbox" id="dark"> тёмная тема</label>
+  <button id="btn">Запустить gantt.js</button>
+  <span id="status"></span>
+  <span class="hint">id блока должен совпадать с BLOCK_ID в gantt.js</span>
+</div>
+
+<div id="chart-wrap">
+  <!-- ID должен быть равен BLOCK_ID в gantt.js -->
+  <div id="gantt_block_id"></div>
+</div>
+
+<script>
+// ============================================================
+// Мок окружения PIX BI
+// ============================================================
+window.themeConfigs = {
+  application: {
+    background: { items: '#ffffff', filter_panel: '#ffffff' },
+    applied_filters: { font_color: '#0f172a', available_font_color: '#0f172a' }
+  },
+  texts: { labels: { font_color: '#0f172a' } }
+};
+
+const BLOCK_ID = 'gantt_block_id';
+// gantt.js в проде использует ID реального блока; здесь переопределяем на стенд.
+window.__GANTT_BLOCK_ID__ = BLOCK_ID;
+window.__DIAG_GANTT_BLOCK_ID__ = BLOCK_ID;
+const DEMO_CSV = 'data/serv_jira_zni_gant_202610191223.csv';
+
+let parsedRows = []; // массив объектов CSV
+let demoLoaded = false;
+
+// -------- CSV-парсер с поддержкой кавычек и ';' внутри значений --------
+function parseCSV(text, delim) {
+  delim = delim || ';';
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"') { inQuotes = true; }
+    else if (ch === delim) { row.push(field); field = ''; }
+    else if (ch === '\n') { row.push(field); field = ''; rows.push(row); row = []; }
+    else if (ch === '\r') { /* skip */ }
+    else { field += ch; }
+  }
+
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+
+  if (rows.length) {
+    rows[0][0] = String(rows[0][0]).replace(/^﻿/, '');
+  }
+  return rows;
+}
+
+function rowsToObjects(rows) {
+  if (rows.length < 2) return [];
+  const headers = rows[0].map((h) => h.trim());
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const vals = rows[i];
+    if (vals.length === 1 && vals[0] === '') continue;
+    const obj = {};
+    headers.forEach((h, j) => { obj[h] = vals[j] !== undefined ? vals[j] : ''; });
+    out.push(obj);
+  }
+  return out;
+}
+
+// ============================================================
+// Мок getItemData: отдельные поля, без склейки в один ключ
+// ============================================================
+window.getItemData = async function () {
+  const doAggregate = document.getElementById('aggregate').checked;
+  const format = new URLSearchParams(location.search).get('format') || 'rows';
+
+  // Поля, которые в реальном блоке PIX BI должны быть отдельными колонками
+  const columns = [
+    { name: 'dt', alias: 'Дата' },
+    { name: 'zni_number', alias: 'Номер ЗНИ' },
+    { name: 'full_name', alias: 'Исполнитель' },
+    { name: 'practice', alias: 'Практика' },
+    { name: 'qrt', alias: 'Квартал' },
+    { name: 'timeworked_h', alias: 'Часы' }
+  ];
+
+  let source = parsedRows;
+
+  if (doAggregate) {
+    // SUM(timeworked_h) по категориям — как это делает PIX BI
+    const map = new Map();
+    for (const r of parsedRows) {
+      const key = [
+        r.dt || '', r.zni_number || '', r.full_name || '',
+        r.practice || '', r.qrt || ''
+      ].join('\u0001');
+      map.set(key, (map.get(key) || 0) + (Number(r.timeworked_h) || 0));
+    }
+    source = [...map.entries()].map(([key, hours]) => {
+      const [dt, zni_number, full_name, practice, qrt] = key.split('\u0001');
+      return { dt, zni_number, full_name, practice, qrt, timeworked_h: hours };
+    });
+  }
+
+  // Как PIX BI: каждая ячейка — { value }
+  const values = source.map((r) => ({
+    dt: { value: r.dt },
+    zni_number: { value: r.zni_number },
+    full_name: { value: r.full_name },
+    practice: { value: r.practice },
+    qrt: { value: r.qrt },
+    timeworked_h: { value: Number(r.timeworked_h) || 0 }
+  }));
+
+  // Легаси-форматы PIX BI (проверка парсера): ?format=cats | cols
+  if (format === 'cats') {
+    return {
+      categories: source.map((r) => ({
+        name: [r.dt, r.zni_number, r.full_name, r.practice, r.qrt],
+        value: Number(r.timeworked_h) || 0
+      }))
+    };
+  }
+  if (format === 'cols') {
+    return {
+      categories: [
+        { name: 'dt', values: source.map((r) => ({ value: r.dt })) },
+        { name: 'zni_number', values: source.map((r) => ({ value: r.zni_number })) },
+        { name: 'full_name', values: source.map((r) => ({ value: r.full_name })) },
+        { name: 'practice', values: source.map((r) => ({ value: r.practice })) },
+        { name: 'qrt', values: source.map((r) => ({ value: r.qrt })) },
+        { name: 'timeworked_h', values: source.map((r) => ({ value: Number(r.timeworked_h) || 0 })) }
+      ]
+    };
+  }
+  // Без columns, значения вперемешку — проверка распознавания по форме.
+  if (format === 'guess') {
+    return {
+      categories: source.slice(0, 2000).map((r) => ({
+        name: [r.practice, r.full_name, r.qrt, r.zni_number, r.dt],
+        value: Number(r.timeworked_h) || 0
+      }))
+    };
+  }
+  // Транспонированный формат: categories = [колонка0, колонка1, ...]
+  if (format === 'transp') {
+    const lim = source.slice(0, 2000);
+    return {
+      categories: [
+        lim.map((r) => r.practice),
+        lim.map((r) => r.full_name),
+        lim.map((r) => r.qrt),
+        lim.map((r) => r.zni_number),
+        lim.map((r) => r.dt),
+        lim.map((r) => Number(r.timeworked_h) || 0)
+      ]
+    };
+  }
+
+  // Легаси-API этой версии PIX BI: одна категория gantt_key + series (мера).
+  if (format === 'key') {
+    return {
+      categories: source.map((r) => ({
+        name: [r.dt, r.zni_number, r.full_name, r.practice, r.qrt].join('|~|'),
+        series: [{ name: "SUM('v_serv_jira_zni_gant'[timeworked_h])", value: String(r.timeworked_h) }],
+        extra_hints: []
+      }))
+    };
+  }
+  // Реальное вычисляемое поле из CSV: gantt_key (с хвостовым '|~|').
+  if (format === 'csvkey') {
+    const map = new Map();
+    for (const r of parsedRows) {
+      const k = r.gantt_key || '';
+      if (!k) continue;
+      map.set(k, (map.get(k) || 0) + (Number(r.timeworked_h) || 0));
+    }
+    return {
+      categories: [...map.entries()].map(([k, h]) => ({
+        name: k,
+        series: [{ name: "SUM('v_serv_jira_zni_gant'[timeworked_h])", value: String(h) }],
+        extra_hints: []
+      }))
+    };
+  }
+  // Универсальный режим «всего 2 поля»: категория + дата.
+  if (format === 'key2') {
+    return {
+      categories: source.map((r) => ({
+        name: [r.zni_number, r.dt].join('|~|'),
+        series: [{ name: "SUM('v_serv_jira_zni_gant'[timeworked_h])", value: String(r.timeworked_h) }],
+        extra_hints: []
+      }))
+    };
+  }
+  // Как реальный блок сейчас: PIX BI отдал только первую категорию (dt).
+  if (format === 'singlecat') {
+    return {
+      categories: source.map((r) => ({
+        name: String(r.dt),
+        series: [{ name: "SUM('v_serv_jira_zni_gant'[timeworked_h])", value: String(r.timeworked_h) }],
+        extra_hints: []
+      }))
+    };
+  }
+
+  // Проверка экрана диагностики (неизвестный формат).
+  if (format === 'bad') {
+    return { columns: [{ name: 'col_a' }, { name: 'col_b' }], values: [[{ value: 'x' }, { value: 1 }]] };
+  }
+
+  return { values, columns };
+};
+
+// ============================================================
+// UI
+// ============================================================
+const statusEl = document.getElementById('status');
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+function applyDemoRows(rows) {
+  parsedRows = rows;
+  setStatus('строк: ' + parsedRows.length);
+}
+
+async function loadDemoCsv() {
+  setStatus('загружаю demo CSV…');
+  try {
+    const res = await fetch(DEMO_CSV);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    applyDemoRows(rowsToObjects(parseCSV(text)));
+    demoLoaded = true;
+    runViz();
+  } catch (e) {
+    setStatus('не удалось загрузить demo CSV: ' + e.message +
+      ' (запусти через npx serve)');
+  }
+}
+
+function runViz() {
+  if (!parsedRows.length) {
+    setStatus('сначала загрузи CSV');
+    return;
+  }
+
+  const wrap = document.getElementById(BLOCK_ID);
+  wrap.innerHTML = '';
+
+  const diag = new URLSearchParams(location.search).get('diag') === '1';
+
+  const old = document.querySelector('script[data-viz="gantt"]');
+  if (old) old.remove();
+
+  const s = document.createElement('script');
+  s.src = diag ? 'diag_gantt.js' : 'gantt.js';
+  s.dataset.viz = 'gantt';
+  s.onerror = () => setStatus(
+    'Не удалось загрузить gantt.js. Открой страницу через локальный сервер (npx serve), а не через file://'
+  );
+  document.body.appendChild(s);
+}
+
+document.getElementById('file').addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const text = await f.text();
+  applyDemoRows(rowsToObjects(parseCSV(text)));
+  runViz();
+});
+
+document.getElementById('load-demo').addEventListener('click', loadDemoCsv);
+document.getElementById('btn').addEventListener('click', runViz);
+
+document.getElementById('dark').addEventListener('change', (e) => {
+  const dark = e.target.checked;
+  document.body.classList.toggle('dark', dark);
+
+  const bg = dark ? '#0f172a' : '#ffffff';
+  const text = dark ? '#e2e8f0' : '#0f172a';
+
+  window.themeConfigs = {
+    application: {
+      background: { items: bg, filter_panel: bg },
+      applied_filters: { font_color: text, available_font_color: text }
+    },
+    texts: { labels: { font_color: text } }
+  };
+
+  window.postMessage({ type: 'THEME_CHANGED' }, '*');
+});
+
+// Автозагрузка demo CSV при открытии
+loadDemoCsv();
+
+// -------- тестовые параметры URL: ?qrt=2026-II&collapse=1&dark=1&raw=1 --------
+(function applyUrlParams() {
+  const params = new URLSearchParams(location.search);
+
+  if (params.get('raw') === '1') {
+    document.getElementById('aggregate').checked = false;
+  }
+
+  if (params.get('dark') === '1') {
+    const cb = document.getElementById('dark');
+    cb.checked = true;
+    cb.dispatchEvent(new Event('change'));
+  }
+
+  const qrt = params.get('qrt');
+  const collapse = params.get('collapse');
+  const tip = params.get('tip');
+  if (!qrt && !collapse && !tip) return;
+
+  const timer = setInterval(function () {
+    const wrap = document.getElementById(BLOCK_ID);
+    const api = wrap && wrap.__pixbiGanttApi;
+    if (!api) return;
+    clearInterval(timer);
+    if (qrt) api.setQrt(qrt);
+    if (collapse === '1') api.setCollapsed(true);
+    if (collapse === '0') api.setCollapsed(false);
+    if (tip === '1') {
+      setTimeout(function () {
+        const ch = wrap.__pixbiGanttChart;
+        const idx = api.getTipCell();
+        if (ch && idx >= 0) {
+          ch.dispatchAction({ type: 'showTip', seriesIndex: 1, dataIndex: idx });
+        }
+      }, 600);
+    }
+  }, 150);
+})();
+
+// -------- диагностика рендера (для локальной отладки) --------
+window.addEventListener('error', function (e) {
+  setStatus('JS ERROR: ' + e.message);
+});
+
+setTimeout(function () {
+  const wrap = document.getElementById(BLOCK_ID);
+  const ch = wrap && wrap.__pixbiGanttChart;
+  if (!ch) { setStatus('chart не создан'); return; }
+
+  try {
+    const opt = ch.getOption();
+    const series = (opt.series || []).map(function (s) {
+      return (s.name || s.type) + '=' + (s.data ? s.data.length : '?');
+    }).join(' | ');
+    const dz = (opt.dataZoom || []).map(function (d) {
+      return d.id + '[' + d.start + '..' + d.end +
+        ' sv=' + d.startValue + ' ev=' + d.endValue + ']';
+    }).join(' ; ');
+    const api = wrap.__pixbiGanttApi;
+    const st = api ? api.getState() : {};
+    setStatus('canvas ' + ch.getWidth() + 'x' + ch.getHeight() +
+      ' | ' + series + ' | ' + dz +
+      ' | qrt=' + st.qrt + ' collapsed=' + (st.collapsed || []).length);
+  } catch (e) {
+    setStatus('diag error: ' + e.message);
+  }
+}, 2500);
+</script>
+
+</body>
+</html>
