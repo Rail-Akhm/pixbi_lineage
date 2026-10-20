@@ -105,6 +105,7 @@ window.themeConfigs = {
 const BLOCK_ID = 'gantt_block_id';
 // gantt.js в проде использует ID реального блока; здесь переопределяем на стенд.
 window.__GANTT_BLOCK_ID__ = BLOCK_ID;
+window.__GANTT_MULTI_BLOCK_ID__ = BLOCK_ID;
 window.__DIAG_GANTT_BLOCK_ID__ = BLOCK_ID;
 const DEMO_CSV = 'data/serv_jira_zni_gant_202610191223.csv';
 
@@ -251,6 +252,39 @@ window.getItemData = async function () {
     };
   }
 
+  // Режим данных «Все категории»: таблица values + columns, как отдаёт PIX BI
+  // при нескольких отдельных полях на полке «Категории». Имя меры — как в
+  // реальном ответе: выражение SUM(...), а не просто timeworked_h.
+  if (format === 'allcats') {
+    const measure = "SUM('v_serv_jira_zni_gant'[timeworked_h])";
+    const info = new Map();
+    for (const r of parsedRows) {
+      const z = String(r.zni_number || '').trim();
+      const d = String(r.epic_summary || '').trim();
+      if (z && d && (!info.get(z) || d.length > info.get(z).length)) info.set(z, d);
+    }
+    return {
+      columns: [
+        { name: 'dt', alias: 'Дата' },
+        { name: 'zni_number', alias: 'Номер ЗНИ' },
+        { name: 'full_name', alias: 'Исполнитель' },
+        { name: 'practice', alias: 'Практика' },
+        { name: 'qrt', alias: 'Квартал' },
+        { name: 'epic_summary', alias: 'Описание ЗНИ' },
+        { name: measure, alias: 'Часы' }
+      ],
+      values: source.map((r) => ({
+        dt: { value: r.dt },
+        zni_number: { value: r.zni_number },
+        full_name: { value: r.full_name },
+        practice: { value: r.practice },
+        qrt: { value: r.qrt },
+        epic_summary: { value: info.get(String(r.zni_number || '').trim()) || '' },
+        [measure]: { value: Number(r.timeworked_h) || 0 }
+      }))
+    };
+  }
+
   // Легаси-API этой версии PIX BI: одна категория gantt_key + series (мера).
   if (format === 'key') {
     return {
@@ -362,15 +396,16 @@ function runViz() {
   wrap.innerHTML = '';
 
   const diag = new URLSearchParams(location.search).get('diag') === '1';
+  const multi = new URLSearchParams(location.search).get('multi') === '1';
 
   const old = document.querySelector('script[data-viz="gantt"]');
   if (old) old.remove();
 
   const s = document.createElement('script');
-  s.src = diag ? 'diag_gantt.js' : 'gantt.js';
+  s.src = diag ? 'diag_gantt.js' : (multi ? 'gantt_multi.js' : 'gantt.js');
   s.dataset.viz = 'gantt';
   s.onerror = () => setStatus(
-    'Не удалось загрузить gantt.js. Открой страницу через локальный сервер (npx serve), а не через file://'
+    'Не удалось загрузить ' + s.src + '. Открой страницу через локальный сервер (npx serve), а не через file://'
   );
   document.body.appendChild(s);
 }
