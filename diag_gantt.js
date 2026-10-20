@@ -44,7 +44,11 @@
       'zni_name', 'zni_desc', 'zni_info', 'zni_description',
       'desc', 'описание', 'название', 'summary', 'epic_summary'
     ],
-    trzDiff: ['trz_diff', 'kcp_jira_time_diff_h', 'разница_трз', 'diff_h', 'diff']
+    trzDiff: ['trz_diff', 'kcp_jira_time_diff_h', 'разница_трз', 'diff_h', 'diff'],
+    estDiff: [
+      'est_diff', 'jira_estimate_time_diff_h', 'jira_estimate_time_diff',
+      'разница_оцененных', 'estimate_diff', 'оцененных'
+    ]
   };
 
   function keyFieldFor(label) {
@@ -221,7 +225,7 @@
 
     const rec = {
       dt: null, zni: null, person: null, practice: null, qrt: null,
-      zniInfo: null, trzDiff: null
+      zniInfo: null, trzDiff: null, estDiff: null
     };
     const rest = [];
 
@@ -348,7 +352,7 @@
       partCounts: {},
       zni: new Set(), persons: new Set(), practices: new Set(),
       qrts: new Set(), days: new Set(), infos: new Set(),
-      diffs: 0,
+      diffs: 0, estDiffs: 0,
       minDay: null, maxDay: null, hours: 0,
       samples: [], bad: []
     };
@@ -393,6 +397,7 @@
       if (r.qrt) stats.qrts.add(r.qrt);
       if (r.zniInfo) stats.infos.add(r.zniInfo);
       if (r.trzDiff !== null && Number.isFinite(Number(r.trzDiff))) stats.diffs++;
+      if (r.estDiff !== null && Number.isFinite(Number(r.estDiff))) stats.estDiffs++;
       if (day) {
         stats.days.add(day);
         if (!stats.minDay || day < stats.minDay) stats.minDay = day;
@@ -441,8 +446,12 @@
     push('сумма часов: ' + (Math.round(stats.hours * 100) / 100));
     push('описаний ЗНИ (метка zni_name=…): ' + stats.infos.size +
       (stats.infos.size ? '' : ' — тултип по номеру ЗНИ будет без описания'));
-    push('строк с разницей ТРЗ (метка trz_diff=…): ' + stats.diffs +
-      (stats.diffs ? '' : ' — в подсказке ячейки не будет блока «Разница ТРЗ»'));
+    push('строк с разницей ТРЗ предварительных ДО (метка trz_diff=…): ' +
+      stats.diffs +
+      (stats.diffs ? '' : ' — в подсказке ячейки не будет этого блока'));
+    push('строк с разницей оценённых ТРЗ (метка est_diff=…): ' +
+      stats.estDiffs +
+      (stats.estDiffs ? '' : ' — в подсказке ячейки не будет этого блока'));
 
     if (stats.samples.length) {
       push('');

@@ -107,7 +107,10 @@ const BLOCK_ID = 'gantt_block_id';
 window.__GANTT_BLOCK_ID__ = BLOCK_ID;
 window.__GANTT_MULTI_BLOCK_ID__ = BLOCK_ID;
 window.__DIAG_GANTT_BLOCK_ID__ = BLOCK_ID;
-const DEMO_CSV = 'data/serv_jira_zni_gant_202610201349.csv';
+// CSV по умолчанию; другой файл можно подставить через ?csv=<путь>.
+const DEMO_CSV =
+  new URLSearchParams(location.search).get('csv') ||
+  'data/serv_jira_zni_gant_202610201349.csv';
 
 let parsedRows = []; // массив объектов CSV
 let demoLoaded = false;
@@ -162,6 +165,16 @@ function rowsToObjects(rows) {
   return out;
 }
 
+// Разница оценённых ТРЗ: в новом датасете колонка называется
+// jira_estimate_time_diff_h; старое имя (без _h) тоже понимаем.
+function estDiffOf(r) {
+  const v = r.jira_estimate_time_diff_h != null &&
+    String(r.jira_estimate_time_diff_h).trim() !== ''
+    ? r.jira_estimate_time_diff_h
+    : r.jira_estimate_time_diff;
+  return v == null ? '' : v;
+}
+
 // ============================================================
 // Мок getItemData: отдельные поля, без склейки в один ключ
 // ============================================================
@@ -178,6 +191,7 @@ window.getItemData = async function () {
     { name: 'qrt', alias: 'Квартал' },
     { name: 'timeworked_h', alias: 'Часы' },
     { name: 'kcp_jira_time_diff_h', alias: 'Разница ТРЗ' },
+    { name: 'jira_estimate_time_diff_h', alias: 'Разница оцененных ТРЗ' },
     { name: 'running_sum_timeworked_h', alias: 'Накопленные часы' }
   ];
 
@@ -195,14 +209,19 @@ window.getItemData = async function () {
       ].join('\u0001');
       let acc = map.get(key);
       if (!acc) {
-        acc = { hours: 0, diff: '', run: '', runNum: -Infinity };
+        acc = {
+          hours: 0, diff: '', estDiff: '', run: '',
+          runNum: -Infinity, estRunNum: -Infinity
+        };
         map.set(key, acc);
       }
       acc.hours += Number(r.timeworked_h) || 0;
 
-      const diff = String(r.kcp_jira_time_diff_h || '').trim();
       const run = String(r.running_sum_timeworked_h || '').trim();
       const runNum = run === '' ? NaN : Number(run);
+      // Значение «на конец дня» для каждой разницы — строка с наибольшим
+      // running_sum_timeworked_h.
+      const diff = String(r.kcp_jira_time_diff_h || '').trim();
       if (diff !== '' && Number.isFinite(Number(diff))) {
         if (!Number.isFinite(runNum)) {
           if (acc.diff === '') acc.diff = diff;
@@ -212,6 +231,15 @@ window.getItemData = async function () {
           acc.runNum = runNum;
         }
       }
+      const estDiff = String(estDiffOf(r) || '').trim();
+      if (estDiff !== '' && Number.isFinite(Number(estDiff))) {
+        if (!Number.isFinite(runNum)) {
+          if (acc.estDiff === '') acc.estDiff = estDiff;
+        } else if (runNum >= acc.estRunNum) {
+          acc.estDiff = estDiff;
+          acc.estRunNum = runNum;
+        }
+      }
     }
     source = [...map.entries()].map(([key, acc]) => {
       const [dt, zni_number, full_name, practice, qrt] = key.split('\u0001');
@@ -219,6 +247,7 @@ window.getItemData = async function () {
         dt, zni_number, full_name, practice, qrt,
         timeworked_h: acc.hours,
         kcp_jira_time_diff_h: acc.diff,
+        jira_estimate_time_diff_h: acc.estDiff,
         running_sum_timeworked_h: acc.run
       };
     });
@@ -233,6 +262,7 @@ window.getItemData = async function () {
     qrt: { value: r.qrt },
     timeworked_h: { value: Number(r.timeworked_h) || 0 },
     kcp_jira_time_diff_h: { value: r.kcp_jira_time_diff_h || '' },
+    jira_estimate_time_diff_h: { value: estDiffOf(r) },
     running_sum_timeworked_h: { value: r.running_sum_timeworked_h || '' }
   }));
 
@@ -301,6 +331,7 @@ window.getItemData = async function () {
         { name: 'qrt', alias: 'Квартал' },
         { name: 'epic_summary', alias: 'Описание ЗНИ' },
         { name: 'kcp_jira_time_diff_h', alias: 'Разница ТРЗ' },
+        { name: 'jira_estimate_time_diff_h', alias: 'Разница оцененных ТРЗ' },
         { name: 'running_sum_timeworked_h', alias: 'Накопленные часы' },
         { name: measure, alias: 'Часы' }
       ],
@@ -312,6 +343,7 @@ window.getItemData = async function () {
         qrt: { value: r.qrt },
         epic_summary: { value: info.get(String(r.zni_number || '').trim()) || '' },
         kcp_jira_time_diff_h: { value: r.kcp_jira_time_diff_h || '' },
+        jira_estimate_time_diff_h: { value: estDiffOf(r) },
         running_sum_timeworked_h: { value: r.running_sum_timeworked_h || '' },
         [measure]: { value: Number(r.timeworked_h) || 0 }
       }))
@@ -328,11 +360,13 @@ window.getItemData = async function () {
       }))
     };
   }
-  // Разница ТРЗ необязательной частью ключа: '|~|trz_diff=<число>'.
-  const diffPart = (r) => {
-    const raw = String(r.kcp_jira_time_diff_h == null ? '' : r.kcp_jira_time_diff_h).trim();
-    return raw === '' || !Number.isFinite(Number(raw)) ? '' : '|~|trz_diff=' + raw;
-  };
+  // Разницы ТРЗ необязательными частями ключа:
+  // '|~|trz_diff=<число>|~|est_diff=<число>'.
+  const diffPart = (raw, label) =>
+    raw === '' || !Number.isFinite(Number(raw)) ? '' : '|~|' + label + '=' + raw;
+  const diffParts = (r) =>
+    diffPart(String(r.kcp_jira_time_diff_h || '').trim(), 'trz_diff') +
+    diffPart(String(estDiffOf(r) || '').trim(), 'est_diff');
   // Реальное вычисляемое поле из CSV: gantt_key (с хвостовым '|~|').
   // Как в проде с рекомендуемой формулой: к ключу добавляется часть
   // '|~|trz_diff=<число>'. Если разница за день разная в нескольких строках
@@ -342,7 +376,7 @@ window.getItemData = async function () {
     const map = new Map();
     for (const r of parsedRows) {
       if (!r.gantt_key) continue;
-      const k = r.gantt_key + diffPart(r);
+      const k = r.gantt_key + diffParts(r);
       map.set(k, (map.get(k) || 0) + (Number(r.timeworked_h) || 0));
     }
     return {
@@ -365,7 +399,7 @@ window.getItemData = async function () {
       categories: source.map((r) => ({
         name: [r.dt, r.zni_number, r.full_name, r.practice, r.qrt].join('|~|') +
           '|~|zni_name=' + (info.get(String(r.zni_number || '').trim()) || '') +
-          diffPart(r),
+          diffParts(r),
         series: [{ name: "SUM('v_serv_jira_zni_gant'[timeworked_h])", value: String(r.timeworked_h) }],
         extra_hints: []
       }))
@@ -527,13 +561,16 @@ loadDemoCsv();
     if (ztip !== null && api.zTipAt) {
       setTimeout(function () { api.zTipAt(Number(ztip)); }, 600);
     }
-    if (tip === '1' || tip === 'diff' || tip === 'neg') {
+    if (tip === '1' || tip === 'diff' || tip === 'neg' ||
+      tip === 'est' || tip === 'estneg') {
       setTimeout(function () {
         const ch = wrap.__pixbiGanttChart;
         if (!ch) return;
-        const diffMode = tip === 'diff' || tip === 'neg';
+        const diffMode = tip === 'diff' || tip === 'neg' ||
+          tip === 'est' || tip === 'estneg';
         if (diffMode && api.findDiffCell) {
-          const hit = api.findDiffCell(tip === 'neg' ? 'neg' : undefined);
+          const hit = api.findDiffCell(tip === 'neg' ? 'neg' :
+            (tip === 'estneg' ? 'estneg' : (tip === 'est' ? 'est' : undefined)));
           if (hit) {
             api.scrollTo(hit.row);
             setTimeout(function () {

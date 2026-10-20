@@ -6,14 +6,15 @@
  *   справа календарь по дням, ячейка дня закрашена по сумме timeworked_h
  *   и подписана часами (подписи — только при зуме, когда день шире 24 px)
  *
- * При наведении на ячейку в подсказке под фактическими часами показывается
- * разница ТРЗ (оценка из предварительных ДО минус факт из Jira) —
- * необязательная часть gantt_key «trz_diff=<число>» или колонка
- * kcp_jira_time_diff_h. Цвет числа — градиент красный → жёлтый → зелёный.
+ * При наведении на ячейку в подсказке под фактическими часами показываются
+ * разницы ТРЗ (необязательные части gantt_key или колонки датасета):
+ *   trz_diff=… / kcp_jira_time_diff_h — предварительные ДО минус факт из Jira;
+ *   est_diff=… / jira_estimate_time_diff_h — оценка из Jira минус факт.
+ * Цвет каждого числа — градиент красный → жёлтый → зелёный.
  *
  * Конфигурация блока PIX BI (режим «Дриллдаун»):
  *   Категории — ОДНО вычисляемое поле gantt_key:
- *       dt|~|zni_number|~|full_name|~|practice|~|qrt|~|zni_name=<описание>|~|trz_diff=<число>
+ *       dt|~|zni_number|~|full_name|~|practice|~|qrt|~|zni_name=<описание>|~|trz_diff=<число>|~|est_diff=<число>
  *   Меры — SUM(timeworked_h) (обязательно).
  *   Серии — пусто.
  *
@@ -54,7 +55,7 @@
 
   // Версия скрипта — видна в шапке, чтобы можно было убедиться,
   // что PIX BI подхватил новую версию, а не закешировал старую.
-  const GANTT_VERSION = '2.7';
+  const GANTT_VERSION = '2.8';
 
   const ROW_H = 26;          // высота строки, px
   const LEFT_W = 500;        // ширина левой панели (3 колонки)
@@ -370,6 +371,12 @@
       'trzDiff', 'trz_diff', 'kcp_jira_time_diff_h',
       'Разница ТРЗ', 'разница_трз', 'diff_h'
     ],
+    // Разница ТРЗ оценённых (оценка из Jira) и фактических из Jira.
+    estDiff: [
+      'estDiff', 'est_diff', 'jira_estimate_time_diff_h',
+      'jira_estimate_time_diff', 'Разница ТРЗ оцененных',
+      'разница_оцененных', 'estimate_diff'
+    ],
     // Накопленные часы по (ЗНИ, исполнитель) — по ним выбирается
     // состояние на конец дня, если в один день несколько записей.
     trzRun: [
@@ -402,6 +409,10 @@
     trzDiff: [
       'trz_diff', 'kcp_jira_time_diff_h', 'разница_трз',
       'diff_h', 'diff'
+    ],
+    estDiff: [
+      'est_diff', 'jira_estimate_time_diff_h', 'jira_estimate_time_diff',
+      'разница_оцененных', 'estimate_diff', 'оцененных'
     ]
   };
 
@@ -451,7 +462,7 @@
 
   // ====== Нормализация строк ======
   // Внутренняя запись: { dtMs, zni, person, practice, qrt, hours, zniInfo,
-  //                      trzDiff, trzRun }
+  //                      trzDiff, estDiff, trzRun }
   // Каждое поле читается из своей колонки таблицы — без склейки в один ключ.
   let normStats = null; // заполняется в normalizeData, печатается в диагностике
   function normalizeData(data) {
@@ -462,7 +473,7 @@
     };
 
     function pushRecord(dtMs, zni, person, practice, qrt, hours, zniInfo,
-      trzDiff, trzRun) {
+      trzDiff, estDiff, trzRun) {
       if (!Number.isFinite(dtMs) || !zni) return;
       stats.ok++;
       out.push({
@@ -473,8 +484,9 @@
         qrt: String(qrt == null ? '' : qrt).trim(),
         hours: Number.isFinite(hours) ? hours : 0,
         zniInfo: String(zniInfo == null ? '' : zniInfo).trim(),
-        // Разница ТРЗ (может отсутствовать — тогда в тултипе её нет).
+        // Разницы ТРЗ (могут отсутствовать — тогда в тултипе их нет).
         trzDiff: num(trzDiff),
+        estDiff: num(estDiff),
         trzRun: num(trzRun)
       });
     }
@@ -511,6 +523,7 @@
         hours,
         fieldOf(rec, FIELDS.zniInfo),
         fieldOf(rec, FIELDS.trzDiff),
+        fieldOf(rec, FIELDS.estDiff),
         fieldOf(rec, FIELDS.trzRun)
       );
     }
@@ -912,6 +925,30 @@
     return;
   }
 
+  // Значение разницы «на конец дня». Если за день несколько записей, верно
+  // значение, посчитанное по наибольшему running_sum (разница убывает с
+  // накопленными часами); при равных running_sum — минимум, а если
+  // running_sum нет вовсе — тоже минимум.
+  function pickEndOfDay(curV, curRun, inV, inRun) {
+    if (!Number.isFinite(inV)) return { v: curV, run: curRun };
+    if (Number.isFinite(inRun)) {
+      if (!Number.isFinite(curRun) || inRun > curRun) return { v: inV, run: inRun };
+      if (inRun === curRun) {
+        return {
+          v: Number.isFinite(curV) ? Math.min(curV, inV) : inV,
+          run: curRun
+        };
+      }
+      return { v: curV, run: curRun }; // запись раньше по времени — не нужна
+    }
+    // running_sum в строке нет: обновляем, только пока он неизвестен.
+    if (Number.isFinite(curRun)) return { v: curV, run: curRun };
+    return {
+      v: Number.isFinite(curV) ? Math.min(curV, inV) : inV,
+      run: curRun
+    };
+  }
+
   // ====== Модель: агрегация по (ЗНИ, исполнитель, день) ======
   function buildModel(recs) {
     const cells = new Map(); // zni \u0001 person \u0001 dtMs -> { dtMs, zni, person, practice, hours }
@@ -924,6 +961,8 @@
     let hasPersons = false;
     let minDiff = Infinity;
     let maxDiff = -Infinity;
+    let minEstDiff = Infinity;
+    let maxEstDiff = -Infinity;
 
     for (const r of recs) {
       if (!Number.isFinite(r.dtMs)) continue;
@@ -942,7 +981,7 @@
         cell = {
           dtMs: r.dtMs, zni: r.zni, person: r.person,
           practice: r.practice, hours: 0, zniInfo: r.zniInfo || '',
-          trzDiff: NaN, trzRun: NaN
+          trzDiff: NaN, trzRun: NaN, estDiff: NaN, estRun: NaN
         };
         cells.set(k, cell);
       } else {
@@ -955,36 +994,32 @@
       }
       cell.hours += r.hours;
 
-      // Разница ТРЗ — состояние на конец дня: если за день несколько записей,
-      // берём значение с наибольшим running_sum (оно же минимальное, так как
-      // разница убывает с накопленными часами). Без running_sum — минимум.
-      if (Number.isFinite(r.trzDiff)) {
-        if (Number.isFinite(r.trzRun) &&
-          (!Number.isFinite(cell.trzRun) || r.trzRun >= cell.trzRun)) {
-          cell.trzDiff = r.trzDiff;
-        } else if (!Number.isFinite(cell.trzRun)) {
-          cell.trzDiff = Number.isFinite(cell.trzDiff)
-            ? Math.min(cell.trzDiff, r.trzDiff)
-            : r.trzDiff;
-        }
-        if (Number.isFinite(r.trzRun)) {
-          cell.trzRun = Number.isFinite(cell.trzRun)
-            ? Math.max(cell.trzRun, r.trzRun)
-            : r.trzRun;
-        }
-      }
+      // Разницы ТРЗ — состояние на конец дня: если за день несколько записей,
+      // берём значение с наибольшим running_sum (разница убывает с
+      // накопленными часами). Обе разницы считаются по одному running_sum.
+      const trz = pickEndOfDay(cell.trzDiff, cell.trzRun, r.trzDiff, r.trzRun);
+      cell.trzDiff = trz.v;
+      cell.trzRun = trz.run;
+      const est = pickEndOfDay(cell.estDiff, cell.estRun, r.estDiff, r.trzRun);
+      cell.estDiff = est.v;
+      cell.estRun = est.run;
 
       totalHours += r.hours;
       if (r.hours > 0) zeroHours = false;
       maxHours = Math.max(maxHours, r.hours);
     }
 
-    // Диапазон разницы ТРЗ — по финальным значениям ячеек (значение
+    // Диапазоны разниц ТРЗ — по финальным значениям ячеек (значение
     // «на конец дня»), а не по промежуточным записям.
     for (const c of cells.values()) {
-      if (!Number.isFinite(c.trzDiff)) continue;
-      minDiff = Math.min(minDiff, c.trzDiff);
-      maxDiff = Math.max(maxDiff, c.trzDiff);
+      if (Number.isFinite(c.trzDiff)) {
+        minDiff = Math.min(minDiff, c.trzDiff);
+        maxDiff = Math.max(maxDiff, c.trzDiff);
+      }
+      if (Number.isFinite(c.estDiff)) {
+        minEstDiff = Math.min(minEstDiff, c.estDiff);
+        maxEstDiff = Math.max(maxEstDiff, c.estDiff);
+      }
     }
 
     const groups = new Map();
@@ -993,7 +1028,8 @@
       if (!g) {
         g = {
           zni: c.zni, zniInfo: '', execs: new Map(),
-          agg: new Map(), aggDiff: new Map(), practices: new Set()
+          agg: new Map(), aggDiff: new Map(), aggEstDiff: new Map(),
+          practices: new Set()
         };
         groups.set(c.zni, g);
       }
@@ -1002,18 +1038,27 @@
       }
       let ex = g.execs.get(c.person);
       if (!ex) {
-        ex = { person: c.person, practice: c.practice, cells: new Map(), diffs: new Map() };
+        ex = {
+          person: c.person, practice: c.practice, cells: new Map(),
+          diffs: new Map(), estDiffs: new Map()
+        };
         g.execs.set(c.person, ex);
       }
       ex.cells.set(c.dtMs, (ex.cells.get(c.dtMs) || 0) + c.hours);
       g.agg.set(c.dtMs, (g.agg.get(c.dtMs) || 0) + c.hours);
       g.practices.add(c.practice);
 
-      // Разница ТРЗ для свёрнутой группы — сумма по исполнителям за день.
+      // Разницы ТРЗ для свёрнутой группы — сумма по исполнителям за день.
       if (Number.isFinite(c.trzDiff)) {
         ex.diffs.set(c.dtMs, c.trzDiff);
         const prev = g.aggDiff.get(c.dtMs);
         g.aggDiff.set(c.dtMs, Number.isFinite(prev) ? prev + c.trzDiff : c.trzDiff);
+      }
+      if (Number.isFinite(c.estDiff)) {
+        ex.estDiffs.set(c.dtMs, c.estDiff);
+        const prev = g.aggEstDiff.get(c.dtMs);
+        g.aggEstDiff.set(c.dtMs,
+          Number.isFinite(prev) ? prev + c.estDiff : c.estDiff);
       }
     }
 
@@ -1048,7 +1093,9 @@
       zeroHours,
       cellCount: cells.size,
       minDiff,
-      maxDiff
+      maxDiff,
+      minEstDiff,
+      maxEstDiff
     };
   }
 
@@ -1172,15 +1219,16 @@
     return sign + fmtCellHours(Math.abs(v)) + ' ч';
   }
 
-  // Градиент разницы ТРЗ: красный (минимум < 0) → жёлтый (0) → зелёный (максимум).
-  function trzDiffColor(v, isDark) {
+  // Градиент разницы ТРЗ: красный (минимум < 0) → жёлтый (0) → зелёный
+  // (максимум). lo / hi — диапазон конкретной разницы по всем ячейкам.
+  function diffColor(v, isDark, lo, hi) {
     if (!Number.isFinite(v)) return isDark ? '#94a3b8' : '#64748b';
     const yellow = isDark ? [250, 204, 21] : [202, 138, 4];
     const green = isDark ? [74, 222, 128] : [21, 128, 61];
     const red = isDark ? [248, 113, 113] : [220, 38, 38];
 
-    const lo = Number.isFinite(model.minDiff) ? model.minDiff : 0;
-    const hi = Number.isFinite(model.maxDiff) ? model.maxDiff : 0;
+    if (!Number.isFinite(lo)) lo = 0;
+    if (!Number.isFinite(hi)) hi = 0;
     let k;
     let to;
     if (v >= 0) {
@@ -1333,7 +1381,8 @@
         _person: meta.person,
         _practice: meta.practice,
         _group: !!meta.group,
-        _trzDiff: Number.isFinite(meta.trzDiff) ? meta.trzDiff : NaN
+        _trzDiff: Number.isFinite(meta.trzDiff) ? meta.trzDiff : NaN,
+        _estDiff: Number.isFinite(meta.estDiff) ? meta.estDiff : NaN
       });
     };
 
@@ -1366,7 +1415,8 @@
               plural(g.execs.length, 'исполнитель', 'исполнителя', 'исполнителей'),
             practice: practices.join(' · '),
             group: true,
-            trzDiff: g.aggDiff.get(ms)
+            trzDiff: g.aggDiff.get(ms),
+            estDiff: g.aggEstDiff.get(ms)
           });
         }
       } else {
@@ -1393,7 +1443,8 @@
               person: ex.person,
               practice: ex.practice,
               group: false,
-              trzDiff: ex.diffs.get(ms)
+              trzDiff: ex.diffs.get(ms),
+              estDiff: ex.estDiffs.get(ms)
             });
           }
           execN++;
@@ -1723,16 +1774,24 @@
     html += '<div style="margin-top:2px;font-size:15px;font-weight:700">' +
       d._hours.toFixed(2).replace('.', ',') + ' ч</div>';
 
-    // Разница ТРЗ — только при наведении, ниже фактических часов.
-    if (Number.isFinite(d._trzDiff)) {
-      html += '<div style="margin-top:6px;padding-top:5px;border-top:1px solid ' +
+    // Разницы ТРЗ — только при наведении, ниже фактических часов:
+    // сначала предварительные ДО, под ней — оценка из Jira.
+    const diffBlock = (value, title, lo, hi) => {
+      if (!Number.isFinite(value)) return '';
+      return '<div style="margin-top:6px;padding-top:5px;border-top:1px solid ' +
         theme.border + '">' +
         '<div style="font-size:11px;line-height:1.3;color:' + theme.muted + '">' +
-        'Разница ТРЗ из предварительных ДО и фактических ТРЗ из Jira</div>' +
+        title + '</div>' +
         '<div style="margin-top:2px;font-size:14px;font-weight:700;color:' +
-        trzDiffColor(d._trzDiff, theme.dark) + '">' +
-        fmtDiffHours(d._trzDiff) + '</div></div>';
-    }
+        diffColor(value, theme.dark, lo, hi) + '">' +
+        fmtDiffHours(value) + '</div></div>';
+    };
+    html += diffBlock(d._trzDiff,
+      'Разница ТРЗ из предварительных ДО и фактических ТРЗ из Jira',
+      model.minDiff, model.maxDiff);
+    html += diffBlock(d._estDiff,
+      'Разница ТРЗ оцененных и фактических из Jira',
+      model.minEstDiff, model.maxEstDiff);
 
     html += '</div>';
     return html;
@@ -2083,19 +2142,23 @@
         if (c.value[1] >= visN) return;
         if (h > bestH) { bestH = h; best = i; }
         // Для стенда: ячейка с разницей ТРЗ интереснее — по ней видно
-        // вторую часть подсказки.
-        if (Number.isFinite(c._trzDiff) && h > diffH) { diffH = h; diff = i; }
+        // нижние части подсказки.
+        if ((Number.isFinite(c._trzDiff) || Number.isFinite(c._estDiff)) &&
+          h > diffH) { diffH = h; diff = i; }
       });
       return diff >= 0 ? diff : best;
     },
-    // Стенд: ячейка с разницей ТРЗ — по ней проверяется вторая часть
+    // Стенд: ячейка с разницей ТРЗ — по ней проверяются нижние части
     // подсказки (может быть за пределами видимых строк). mode='neg' —
-    // ячейка с отрицательной разницей (красная часть градиента).
+    // отрицательная разница предварительных ДО, 'est' / 'estneg' — разница
+    // оценённых и фактических из Jira.
     findDiffCell(mode) {
+      const est = mode === 'est' || mode === 'estneg';
+      const neg = mode === 'neg' || mode === 'estneg';
       for (let i = 0; i < viewCells.length; i++) {
-        const v = viewCells[i]._trzDiff;
+        const v = est ? viewCells[i]._estDiff : viewCells[i]._trzDiff;
         if (!Number.isFinite(v)) continue;
-        if (mode === 'neg' && v >= 0) continue;
+        if (neg && v >= 0) continue;
         return { dataIndex: i, row: viewCells[i].value[1] };
       }
       return null;
