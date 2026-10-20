@@ -4,21 +4,24 @@
  * Классическая диаграмма Ганта по трудозатратам:
  *   слева 3 колонки: Номер ЗНИ | Исполнитель | Практика
  *   справа календарь по дням, ячейка дня закрашена по сумме timeworked_h
+ *   и подписана часами (подписи — только при зуме, когда день шире 24 px)
  *
- * Конфигурация блока PIX BI:
- *   Категории — ОТДЕЛЬНЫЕ поля (без склейки в один ключ):
- *       dt, zni_number, full_name, practice, qrt
+ * Конфигурация блока PIX BI (режим «Дриллдаун»):
+ *   Категории — ОДНО вычисляемое поле gantt_key:
+ *       dt|~|zni_number|~|full_name|~|practice|~|qrt|~|zni_name=<описание>
  *   Меры — SUM(timeworked_h) (обязательно).
  *   Серии — пусто.
  *
- * Визуал читает табличный формат getItemData:
+ * Дополнительно читается табличный формат getItemData (режим «Все категории»):
  *   { values: [...], columns: [...] } — каждая строка keyed by columns[i].name/alias,
  *   каждая ячейка может быть { value: ... } или «голым» значением.
- * Дополнительно поддерживаются data/rows и массив объектов.
+ * Также поддерживаются data/rows и массив объектов.
  *
  * Фильтры по остальным полям (status_zni, project_name, epic_status и т.д.)
  * настраиваются штатными фильтрами PIX BI — визуал получает уже
- * отфильтрованные строки. Внутри визуала есть только селектор квартала.
+ * отфильтрованные строки. Внутри визуала своих фильтров и счётчиков нет:
+ * селектор квартала, кнопки «Развернуть/Свернуть все» и статистика убраны
+ * (делаются средствами PIX BI). Разворот одной группы — кликом по строке ЗНИ.
  *
  * BLOCK_ID должен совпадать с ID блока PIX BI (DOM-элементом для рендера).
  */
@@ -46,13 +49,17 @@
 
   // Версия скрипта — видна в шапке, чтобы можно было убедиться,
   // что PIX BI подхватил новую версию, а не закешировал старую.
-  const GANTT_VERSION = '2.3';
+  const GANTT_VERSION = '2.6';
 
   const ROW_H = 26;          // высота строки, px
   const LEFT_W = 500;        // ширина левой панели (3 колонки)
   const GRID_TOP = 46;       // место под подписи месяцев (ось сверху)
   const GRID_BOTTOM = 44;    // место под слайдер
   const GRID_RIGHT = 24;
+
+  // Подписи часов внутри ячеек показываются только при достаточном зуме:
+  // ширина одного дня в px должна быть не меньше этого порога.
+  const CELL_LABEL_MIN_W = 24;
 
   // Ширины колонок левой панели (в сумме LEFT_W - 22)
   const COL_ZNI = 106;
@@ -1035,11 +1042,14 @@
     };
   }
 
-  // Непрерывная шкала «часы за день»: 0 -> max
+  // Непрерывная шкала «часы за день»: 0 -> max.
+  // Нижние стопы достаточно насыщены, чтобы ячейки с малым числом часов
+  // не сливались со светло-синим фоном дашборда.
+  const HEAT_GAMMA = 0.6; // растягивает низкие значения (0.1 -> ~0.25)
   function heatScale(isDark) {
     const stops = isDark
-      ? [[0, '#0b3a5c'], [0.25, '#075985'], [0.5, '#0284c7'], [0.75, '#38bdf8'], [1, '#bae6fd']]
-      : [[0, '#e8f2fd'], [0.25, '#b6d7f7'], [0.5, '#5aa9e6'], [0.75, '#1d6fd0'], [1, '#123f8c']];
+      ? [[0, '#12527d'], [0.25, '#0c6ba8'], [0.5, '#1195dc'], [0.75, '#38bdf8'], [1, '#bae6fd']]
+      : [[0, '#7ab6ea'], [0.25, '#5aa9e6'], [0.5, '#2f84d6'], [0.75, '#175bb5'], [1, '#0a2f63']];
 
     const rgbStops = stops.map(([pos, hex]) => {
       const h = hex.slice(1);
@@ -1047,9 +1057,10 @@
     });
 
     return function colorFor(hours) {
-      const t = model.maxHours > 0
+      const raw = model.maxHours > 0
         ? clamp(hours / model.maxHours, 0, 1)
         : 0;
+      const t = Math.pow(raw, HEAT_GAMMA);
       for (let i = 1; i < rgbStops.length; i++) {
         if (t <= rgbStops[i][0]) {
           const [p0, r0, g0, b0] = rgbStops[i - 1];
@@ -1066,11 +1077,34 @@
     };
   }
 
+  // Часы в подписи ячейки: компактно, без хвостовых нулей, запятая.
+  // 10,5 / 8,17 / 2,5 / 0,02 — до 4 символов.
+  function fmtCellHours(hours) {
+    if (!Number.isFinite(hours)) return '';
+    const s = Math.abs(hours) >= 10 ? hours.toFixed(1) : hours.toFixed(2);
+    return s.replace(/\.?0+$/, '').replace('.', ',');
+  }
+
+  // Цвет подписи по яркости заливки: тёмный текст на светлых ячейках,
+  // белый — на тёмно-синих.
+  function labelColorFor(rgb) {
+    const m = String(rgb).match(/\d+(?:\.\d+)?/g);
+    if (!m || m.length < 3) return '#0f172a';
+    const lin = (c) => {
+      c = c / 255;
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    };
+    const lum = 0.2126 * lin(+m[0]) + 0.7152 * lin(+m[1]) + 0.0722 * lin(+m[2]);
+    return lum > 0.2 ? '#0f172a' : '#ffffff';
+  }
+
   function gradientCss(isDark) {
     const scale = heatScale(isDark);
     const samples = [];
-    for (let i = 0; i <= 4; i++) {
-      samples.push(scale(model.maxHours * i / 4));
+    // 12 точек: при нелинейной (гамма) шкале линейная CSS-интерполяция
+    // по пяти точкам заметно расходилась бы с цветом ячеек.
+    for (let i = 0; i <= 12; i++) {
+      samples.push(scale(model.maxHours * i / 12));
     }
     return 'linear-gradient(90deg,' + samples.join(',') + ')';
   }
@@ -1110,15 +1144,9 @@
     '.pg-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;',
     'padding:6px 10px;flex-shrink:0;border-bottom:1px solid;font-family:' + FONT_FAMILY + '}',
     '.pg-cap{font-size:11px;white-space:nowrap}',
-    '.pg-select{font-family:' + FONT_FAMILY + ';font-size:12px;padding:3px 8px;border-radius:6px;',
-    'border:1px solid;outline:none;cursor:pointer;min-width:150px}',
     '.pg-legend{display:flex;align-items:center;gap:6px}',
     '.pg-bar{display:inline-block;width:120px;height:10px;border-radius:3px}',
-    '.pg-btn{font-family:' + FONT_FAMILY + ';font-size:11px;padding:3px 9px;border-radius:6px;',
-    'border:1px solid;background:transparent;cursor:pointer;white-space:nowrap}',
-    '.pg-btn:hover{opacity:.75}',
     '.pg-spacer{flex:1 1 auto}',
-    '.pg-stats{white-space:nowrap;font-size:11px}',
     '.pg-range{white-space:nowrap;font-size:11px}',
     '.pg-warn{color:#dc2626;font-size:11px;font-weight:600;white-space:nowrap}',
     '.pg-chart{flex:1 1 auto;min-height:0;width:100%;position:relative}',
@@ -1150,7 +1178,6 @@
   let viewRows = [];
   let viewCells = [];
   let viewDecor = [];
-  let viewStats = { groups: 0, persons: 0, hours: 0 };
 
   const state = {
     qrt: '__all__',
@@ -1195,22 +1222,20 @@
     const cells = [];
     const decor = [];
 
-    const periodGroups = new Set();
-    const periodPersons = new Set();
-    let periodHours = 0;
-
     const pushCell = (x, y, hours, meta) => {
+      const color = scale(hours);
       cells.push({
         value: [x, y, hours],
-        itemStyle: { color: scale(hours) },
+        itemStyle: { color: color },
         _hours: hours,
+        _label: fmtCellHours(hours),
+        _labelColor: labelColorFor(color),
         _date: meta.date,
         _zni: meta.zni,
         _person: meta.person,
         _practice: meta.practice,
         _group: !!meta.group
       });
-      periodHours += hours;
     };
 
     for (const g of model.groups) {
@@ -1235,8 +1260,6 @@
         for (const [ms, h] of g.agg) {
           const x = dayIndex.get(ms);
           if (x == null) continue;
-          periodGroups.add(g.zni);
-          for (const ex of g.execs) periodPersons.add(ex.person);
           pushCell(x, groupRow, h, {
             date: isoOf(ms),
             zni: g.zni,
@@ -1264,8 +1287,6 @@
           for (const [ms, h] of ex.cells) {
             const x = dayIndex.get(ms);
             if (x == null) continue;
-            periodGroups.add(g.zni);
-            periodPersons.add(ex.person);
             pushCell(x, y, h, {
               date: isoOf(ms),
               zni: g.zni,
@@ -1306,12 +1327,6 @@
       }
     }
 
-    viewStats = {
-      groups: periodGroups.size,
-      persons: periodPersons.size,
-      hours: periodHours
-    };
-
     return { rows, cells, decor };
   }
 
@@ -1326,7 +1341,7 @@
     const w = Math.max(1, s[0] - gap);
     const h = Math.max(1, s[1] - gap);
 
-    return {
+    const rect = {
       type: 'rect',
       shape: {
         x: p[0] - w / 2,
@@ -1336,6 +1351,29 @@
         r: w >= 8 ? 2 : 0
       },
       style: api.style()
+    };
+
+    // Часы внутри ячейки — только при достаточном зуме (иначе цифры
+    // не влезают и превращаются в шум).
+    const cell = viewCells[_params.dataIndex];
+    if (!cell || !cell._label || s[0] < CELL_LABEL_MIN_W || h < 12) return rect;
+
+    // Важно: массив элементов renderItem в ECharts 5.4.3 ломается (ошибка
+    // внутри _add, старые элементы остаются на месте) — поэтому группа.
+    return {
+      type: 'group',
+      children: [rect, {
+        type: 'text',
+        style: {
+          text: cell._label,
+          x: p[0],
+          y: p[1],
+          align: 'center',
+          verticalAlign: 'middle',
+          fill: cell._labelColor,
+          font: '600 10px ' + FONT_FAMILY
+        }
+      }]
     };
   }
 
@@ -1733,33 +1771,12 @@
     return fmtDayHuman(days[0]) + ' – ' + fmtDayHuman(days[days.length - 1]);
   }
 
-  function optionsHtml() {
-    let html = '<option value="__all__"' +
-      (state.qrt === '__all__' ? ' selected' : '') + '>Весь период</option>';
-
-    for (const q of model.qrts) {
-      const qn = q.split('-')[1] || '';
-      html += '<option value="' + escHtml(q) + '"' +
-        (state.qrt === q ? ' selected' : '') + '>' +
-        escHtml(q) + ' — ' + escHtml(qn) + ' квартал</option>';
-    }
-    return html;
-  }
-
   function renderHeader(theme) {
-    const btnStyle = 'color:' + theme.text + ';border-color:' + theme.border + ';';
-    const selStyle = 'color:' + theme.text + ';background:' + theme.bg +
-      ';border-color:' + theme.border + ';';
-
     headerEl.style.color = theme.text;
     headerEl.style.borderBottomColor = theme.border;
     headerEl.style.background = theme.bg;
 
     headerEl.innerHTML =
-      '<div class="pg-group">' +
-        '<span class="pg-cap" style="color:' + theme.muted + '">Квартал</span> ' +
-        '<select class="pg-select" style="' + selStyle + '">' + optionsHtml() + '</select>' +
-      '</div>' +
       '<div class="pg-legend" title="Часы за день (сумма по записям за дату)">' +
         '<span class="pg-cap" style="color:' + theme.muted + '">0 ч</span>' +
         '<span class="pg-bar" style="background:' + gradientCss(theme.dark) + '"></span>' +
@@ -1771,19 +1788,9 @@
         ? '<span class="pg-warn">Внимание: мера времени = 0 — проверь SUM(timeworked_h)</span>'
         : '') +
       '<span class="pg-spacer"></span>' +
-      '<button class="pg-btn" data-act="expand" style="' + btnStyle + '">Развернуть все</button>' +
-      '<button class="pg-btn" data-act="collapse" style="' + btnStyle + '">Свернуть все</button>' +
-      '<span class="pg-stats" style="color:' + theme.muted + '">' +
-        viewStats.groups + ' ЗНИ' +
-        (model.hasPersons
-          ? ' · ' + viewStats.persons + ' ' +
-            plural(viewStats.persons, 'исполнитель', 'исполнителя', 'исполнителей')
-          : '') +
-        ' · ' + fmtHours(viewStats.hours) +
-      '</span>' +
       '<span class="pg-ver" style="color:' + theme.faint +
         ';font-size:10px;opacity:.75" title="Версия gantt.js: ' +
-        GANTT_VERSION + ' (описание ЗНИ по наведению на номер)">v' +
+        GANTT_VERSION + ' (без встроенных фильтров и счётчиков)">v' +
         GANTT_VERSION + '</span>';
   }
 
@@ -2177,25 +2184,6 @@
     render();
     applyYWindow();
   }
-
-  // Делегирование событий шапки (навешивается один раз)
-  headerEl.addEventListener('change', function (e) {
-    const sel = e.target.closest ? e.target.closest('.pg-select') : null;
-    if (!sel) return;
-
-    state.qrt = sel.value || '__all__';
-    state.xZoom = null;
-    state.yStart = 0;
-    render();
-  });
-
-  headerEl.addEventListener('click', function (e) {
-    const btn = e.target.closest ? e.target.closest('.pg-btn') : null;
-    if (!btn) return;
-
-    if (btn.getAttribute('data-act') === 'expand') setAllCollapsed(false);
-    if (btn.getAttribute('data-act') === 'collapse') setAllCollapsed(true);
-  });
 
   // ====== Первый рендер ======
   render();
