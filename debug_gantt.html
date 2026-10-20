@@ -107,7 +107,7 @@ const BLOCK_ID = 'gantt_block_id';
 window.__GANTT_BLOCK_ID__ = BLOCK_ID;
 window.__GANTT_MULTI_BLOCK_ID__ = BLOCK_ID;
 window.__DIAG_GANTT_BLOCK_ID__ = BLOCK_ID;
-const DEMO_CSV = 'data/serv_jira_zni_gant_202610191223.csv';
+const DEMO_CSV = 'data/serv_jira_zni_gant_202610201349.csv';
 
 let parsedRows = []; // массив объектов CSV
 let demoLoaded = false;
@@ -176,24 +176,51 @@ window.getItemData = async function () {
     { name: 'full_name', alias: 'Исполнитель' },
     { name: 'practice', alias: 'Практика' },
     { name: 'qrt', alias: 'Квартал' },
-    { name: 'timeworked_h', alias: 'Часы' }
+    { name: 'timeworked_h', alias: 'Часы' },
+    { name: 'kcp_jira_time_diff_h', alias: 'Разница ТРЗ' },
+    { name: 'running_sum_timeworked_h', alias: 'Накопленные часы' }
   ];
 
   let source = parsedRows;
 
   if (doAggregate) {
-    // SUM(timeworked_h) по категориям — как это делает PIX BI
+    // SUM(timeworked_h) по категориям — как это делает PIX BI.
+    // Разница ТРЗ — не мера, а состояние на конец дня: берём строку
+    // с наибольшим running_sum_timeworked_h.
     const map = new Map();
     for (const r of parsedRows) {
       const key = [
         r.dt || '', r.zni_number || '', r.full_name || '',
         r.practice || '', r.qrt || ''
       ].join('\u0001');
-      map.set(key, (map.get(key) || 0) + (Number(r.timeworked_h) || 0));
+      let acc = map.get(key);
+      if (!acc) {
+        acc = { hours: 0, diff: '', run: '', runNum: -Infinity };
+        map.set(key, acc);
+      }
+      acc.hours += Number(r.timeworked_h) || 0;
+
+      const diff = String(r.kcp_jira_time_diff_h || '').trim();
+      const run = String(r.running_sum_timeworked_h || '').trim();
+      const runNum = run === '' ? NaN : Number(run);
+      if (diff !== '' && Number.isFinite(Number(diff))) {
+        if (!Number.isFinite(runNum)) {
+          if (acc.diff === '') acc.diff = diff;
+        } else if (runNum >= acc.runNum) {
+          acc.diff = diff;
+          acc.run = run;
+          acc.runNum = runNum;
+        }
+      }
     }
-    source = [...map.entries()].map(([key, hours]) => {
+    source = [...map.entries()].map(([key, acc]) => {
       const [dt, zni_number, full_name, practice, qrt] = key.split('\u0001');
-      return { dt, zni_number, full_name, practice, qrt, timeworked_h: hours };
+      return {
+        dt, zni_number, full_name, practice, qrt,
+        timeworked_h: acc.hours,
+        kcp_jira_time_diff_h: acc.diff,
+        running_sum_timeworked_h: acc.run
+      };
     });
   }
 
@@ -204,7 +231,9 @@ window.getItemData = async function () {
     full_name: { value: r.full_name },
     practice: { value: r.practice },
     qrt: { value: r.qrt },
-    timeworked_h: { value: Number(r.timeworked_h) || 0 }
+    timeworked_h: { value: Number(r.timeworked_h) || 0 },
+    kcp_jira_time_diff_h: { value: r.kcp_jira_time_diff_h || '' },
+    running_sum_timeworked_h: { value: r.running_sum_timeworked_h || '' }
   }));
 
   // Легаси-форматы PIX BI (проверка парсера): ?format=cats | cols
@@ -271,6 +300,8 @@ window.getItemData = async function () {
         { name: 'practice', alias: 'Практика' },
         { name: 'qrt', alias: 'Квартал' },
         { name: 'epic_summary', alias: 'Описание ЗНИ' },
+        { name: 'kcp_jira_time_diff_h', alias: 'Разница ТРЗ' },
+        { name: 'running_sum_timeworked_h', alias: 'Накопленные часы' },
         { name: measure, alias: 'Часы' }
       ],
       values: source.map((r) => ({
@@ -280,6 +311,8 @@ window.getItemData = async function () {
         practice: { value: r.practice },
         qrt: { value: r.qrt },
         epic_summary: { value: info.get(String(r.zni_number || '').trim()) || '' },
+        kcp_jira_time_diff_h: { value: r.kcp_jira_time_diff_h || '' },
+        running_sum_timeworked_h: { value: r.running_sum_timeworked_h || '' },
         [measure]: { value: Number(r.timeworked_h) || 0 }
       }))
     };
@@ -295,12 +328,21 @@ window.getItemData = async function () {
       }))
     };
   }
+  // Разница ТРЗ необязательной частью ключа: '|~|trz_diff=<число>'.
+  const diffPart = (r) => {
+    const raw = String(r.kcp_jira_time_diff_h == null ? '' : r.kcp_jira_time_diff_h).trim();
+    return raw === '' || !Number.isFinite(Number(raw)) ? '' : '|~|trz_diff=' + raw;
+  };
   // Реальное вычисляемое поле из CSV: gantt_key (с хвостовым '|~|').
+  // Как в проде с рекомендуемой формулой: к ключу добавляется часть
+  // '|~|trz_diff=<число>'. Если разница за день разная в нескольких строках
+  // одного ключа, ключи разделяются, а gantt.js снова склеивает их в ячейку
+  // (ЗНИ + исполнитель + день) и берёт состояние на конец дня.
   if (format === 'csvkey') {
     const map = new Map();
     for (const r of parsedRows) {
-      const k = r.gantt_key || '';
-      if (!k) continue;
+      if (!r.gantt_key) continue;
+      const k = r.gantt_key + diffPart(r);
       map.set(k, (map.get(k) || 0) + (Number(r.timeworked_h) || 0));
     }
     return {
@@ -322,7 +364,8 @@ window.getItemData = async function () {
     return {
       categories: source.map((r) => ({
         name: [r.dt, r.zni_number, r.full_name, r.practice, r.qrt].join('|~|') +
-          '|~|zni_name=' + (info.get(String(r.zni_number || '').trim()) || ''),
+          '|~|zni_name=' + (info.get(String(r.zni_number || '').trim()) || '') +
+          diffPart(r),
         series: [{ name: "SUM('v_serv_jira_zni_gant'[timeworked_h])", value: String(r.timeworked_h) }],
         extra_hints: []
       }))
@@ -442,7 +485,7 @@ document.getElementById('dark').addEventListener('change', (e) => {
 // Автозагрузка demo CSV при открытии
 loadDemoCsv();
 
-// -------- тестовые параметры URL: ?qrt=2026-II&collapse=1&dark=1&raw=1 --------
+// -------- тестовые параметры URL: ?qrt=2026-II&collapse=1&dark=1&raw=1&tip=diff --------
 (function applyUrlParams() {
   const params = new URLSearchParams(location.search);
 
@@ -484,11 +527,23 @@ loadDemoCsv();
     if (ztip !== null && api.zTipAt) {
       setTimeout(function () { api.zTipAt(Number(ztip)); }, 600);
     }
-    if (tip === '1') {
+    if (tip === '1' || tip === 'diff' || tip === 'neg') {
       setTimeout(function () {
         const ch = wrap.__pixbiGanttChart;
+        if (!ch) return;
+        const diffMode = tip === 'diff' || tip === 'neg';
+        if (diffMode && api.findDiffCell) {
+          const hit = api.findDiffCell(tip === 'neg' ? 'neg' : undefined);
+          if (hit) {
+            api.scrollTo(hit.row);
+            setTimeout(function () {
+              ch.dispatchAction({ type: 'showTip', seriesIndex: 1, dataIndex: hit.dataIndex });
+            }, 300);
+            return;
+          }
+        }
         const idx = api.getTipCell();
-        if (ch && idx >= 0) {
+        if (idx >= 0) {
           ch.dispatchAction({ type: 'showTip', seriesIndex: 1, dataIndex: idx });
         }
       }, 600);

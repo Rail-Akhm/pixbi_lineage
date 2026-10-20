@@ -17,16 +17,17 @@
     (typeof window !== 'undefined' && window.__DIAG_GANTT_BLOCK_ID__) ||
     'vv86tlu5j3ljm7amqnvi2sj3nwqx0ax3';
 
-  // Ожидаемые значения по датасету serv_jira_zni_gant_202610191223.csv.
-  // Обновить, если датасет или фильтры изменятся.
+  // Ожидаемые значения по датасету serv_jira_zni_gant_202610201349.csv
+  // с ключом, в который добавлена часть 'trz_diff=…' (1884 уникальных
+  // комбинации; без неё — 1810). Обновить, если датасет или формула изменятся.
   const EXPECTED = {
-    rows: 1373,
-    zni: 69,
-    persons: 21,
-    practices: 2,
-    hours: 3601.55,
-    from: '2025-01-29',
-    to: '2026-10-16'
+    rows: 1884,
+    zni: 76,
+    persons: 30,
+    practices: 4,
+    hours: 4599.78,
+    from: '2024-11-20',
+    to: '2026-10-19'
   };
 
   const SEPS = ['|~|', '\u001F', '§', '||'];
@@ -42,7 +43,8 @@
     zniInfo: [
       'zni_name', 'zni_desc', 'zni_info', 'zni_description',
       'desc', 'описание', 'название', 'summary', 'epic_summary'
-    ]
+    ],
+    trzDiff: ['trz_diff', 'kcp_jira_time_diff_h', 'разница_трз', 'diff_h', 'diff']
   };
 
   function keyFieldFor(label) {
@@ -218,7 +220,8 @@
     }).filter(function (p) { return p !== ''; });
 
     const rec = {
-      dt: null, zni: null, person: null, practice: null, qrt: null, zniInfo: null
+      dt: null, zni: null, person: null, practice: null, qrt: null,
+      zniInfo: null, trzDiff: null
     };
     const rest = [];
 
@@ -345,6 +348,7 @@
       partCounts: {},
       zni: new Set(), persons: new Set(), practices: new Set(),
       qrts: new Set(), days: new Set(), infos: new Set(),
+      diffs: 0,
       minDay: null, maxDay: null, hours: 0,
       samples: [], bad: []
     };
@@ -388,6 +392,7 @@
       if (r.practice) stats.practices.add(r.practice);
       if (r.qrt) stats.qrts.add(r.qrt);
       if (r.zniInfo) stats.infos.add(r.zniInfo);
+      if (r.trzDiff !== null && Number.isFinite(Number(r.trzDiff))) stats.diffs++;
       if (day) {
         stats.days.add(day);
         if (!stats.minDay || day < stats.minDay) stats.minDay = day;
@@ -436,6 +441,8 @@
     push('сумма часов: ' + (Math.round(stats.hours * 100) / 100));
     push('описаний ЗНИ (метка zni_name=…): ' + stats.infos.size +
       (stats.infos.size ? '' : ' — тултип по номеру ЗНИ будет без описания'));
+    push('строк с разницей ТРЗ (метка trz_diff=…): ' + stats.diffs +
+      (stats.diffs ? '' : ' — в подсказке ячейки не будет блока «Разница ТРЗ»'));
 
     if (stats.samples.length) {
       push('');
